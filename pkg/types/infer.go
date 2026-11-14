@@ -531,6 +531,12 @@ type Inferencer struct {
 	funcCtx      *funcReturnCtx
 	breakCtx     *breakTargetCtx
 	selfType     Type
+
+	// declModule and declModuleName identify the module being inferred; they
+	// are copied to every struct it declares. Both are empty for the main
+	// program, whose structs therefore have unknown identity.
+	declModule     string
+	declModuleName string
 }
 
 var BuiltinBytesFuncType = &FuncType{
@@ -1420,9 +1426,9 @@ func (inf *Inferencer) inferFuncBody(body []ast.Stmt, fnType *FuncType, declared
 	if declaredRetType != TypeUnknown {
 		if !IsAssignableTo(unifiedType, declaredRetType) {
 			if isMethod {
-				return inf.posErr(pos, "return type mismatch in method '%s' of struct '%s': expected %s, got %s", entityName, structName, declaredRetType, unifiedType)
+				return inf.posErr(pos, "return type mismatch in method '%s' of struct '%s': expected %s, got %s", entityName, structName, qual(declaredRetType, unifiedType), qual(unifiedType, declaredRetType))
 			}
-			return inf.posErr(pos, "return type mismatch in function '%s': expected %s, got %s", entityName, declaredRetType, unifiedType)
+			return inf.posErr(pos, "return type mismatch in function '%s': expected %s, got %s", entityName, qual(declaredRetType, unifiedType), qual(unifiedType, declaredRetType))
 		}
 	} else if unifiedType != TypeUnknown {
 		fnType.Ret = unifiedType
@@ -1488,7 +1494,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				return err
 			}
 			if !IsAssignableTo(valType, expected) {
-				return inf.nodeErr(s, "type mismatch for variable '%s': expected %s, got %s", s.Name, expected, valType)
+				return inf.nodeErr(s, "type mismatch for variable '%s': expected %s, got %s", s.Name, qual(expected, valType), qual(valType, expected))
 			}
 			targetType = expected
 		} else if targetType == TypeUnknown && !isEmptyCollection(s.Value) {
@@ -1853,6 +1859,8 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 
 		st := &StructType{
 			Name:            s.Name,
+			DeclModule:      inf.declModule,
+			DeclModuleName:  inf.declModuleName,
 			Fields:          make(map[string]Type),
 			FieldOrder:      make([]string, 0),
 			Embedded:        make([]*StructType, 0),
@@ -3623,7 +3631,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				if len(e.Args) >= 2 {
 					if _, isNamed := e.Args[0].(*ast.NamedArgExpr); !isNamed {
 						if firstT, err := inf.inferExpr(e.Args[0]); err == nil {
-							if firstSt, ok := firstT.(*StructType); ok && firstSt.Name == st.Name && len(firstSt.TypeArgs) == len(st.TypeParams) {
+							if firstSt, ok := firstT.(*StructType); ok && sameStructDecl(firstSt, st) && len(firstSt.TypeArgs) == len(st.TypeParams) {
 								hasNamedInRest := false
 								for _, a := range e.Args[1:] {
 									if _, ok := a.(*ast.NamedArgExpr); ok {
@@ -3776,7 +3784,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 								return nil, err
 							}
 							if !IsAssignableTo(valT, expectedFieldT) {
-								return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, expectedFieldT, valT)
+								return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
 							}
 						} else {
 							return nil, inf.nodeErr(named, "unknown field '%s' in struct '%s'", named.Name, st.Name)
@@ -3790,7 +3798,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 								return nil, err
 							}
 							if !IsAssignableTo(valT, expectedFieldT) {
-								return nil, inf.nodeErr(arg, "type mismatch for field '%s' in struct '%s': expected %s, got %s", fName, st.Name, expectedFieldT, valT)
+								return nil, inf.nodeErr(arg, "type mismatch for field '%s' in struct '%s': expected %s, got %s", fName, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
 							}
 							posIdx++
 						} else {
@@ -3815,7 +3823,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 										return nil, err
 									}
 									if !IsAssignableTo(valT, expectedFieldT) {
-										return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, expectedFieldT, valT)
+										return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
 									}
 								}
 							} else {
@@ -4022,12 +4030,12 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 					if i < len(argTuple.Elems) {
 						expectedParamT := argTuple.Elems[i]
 						if !IsAssignableTo(argT, expectedParamT) {
-							return nil, inf.nodeErr(argExpr, "type mismatch in argument %d: expected %s, got %s", i+1, expectedParamT, argT)
+							return nil, inf.nodeErr(argExpr, "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
 						}
 					} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
 						expectedParamT := argTuple.Elems[len(argTuple.Elems)-1]
 						if !IsAssignableTo(argT, expectedParamT) {
-							return nil, inf.nodeErr(argExpr, "type mismatch in variadic argument %d: expected %s, got %s", i+1, expectedParamT, argT)
+							return nil, inf.nodeErr(argExpr, "type mismatch in variadic argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
 						}
 					}
 				}
@@ -4060,7 +4068,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 							}
 							if expectedParamT != nil && !IsAssignableTo(argT, expectedParamT) {
 								typesMatch = false
-								lastMismatch = inf.nodeErr(args[i], "type mismatch in argument %d: expected %s, got %s", i+1, expectedParamT, argT)
+								lastMismatch = inf.nodeErr(args[i], "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
 								break
 							}
 						}
@@ -5201,7 +5209,7 @@ func unifyTypeParams(paramType, argType Type, bindings map[string]Type) {
 	case *UnionType:
 		unifyUnionTypeParams(pt, argType, bindings)
 	case *StructType:
-		if at, ok := argType.(*StructType); ok && pt.Name == at.Name {
+		if at, ok := argType.(*StructType); ok && sameStructDecl(pt, at) {
 			for i := 0; i < len(pt.TypeArgs) && i < len(at.TypeArgs); i++ {
 				unifyTypeParams(pt.TypeArgs[i], at.TypeArgs[i], bindings)
 			}

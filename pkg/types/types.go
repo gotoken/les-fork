@@ -327,7 +327,7 @@ func (u *UnionType) Equals(other Type) bool {
 
 // sameStructAssignable reports whether sSrc is sTarget, respecting type arguments.
 func sameStructAssignable(sSrc, sTarget *StructType, active map[[2]*StructType]bool) bool {
-	if sTarget.Name != sSrc.Name {
+	if !sameStructDecl(sSrc, sTarget) {
 		return false
 	}
 	if len(sTarget.TypeArgs) == 0 {
@@ -1586,7 +1586,14 @@ type StructFieldInfo struct {
 
 // StructType represents user-defined struct type with fields, embedded structs, and methods.
 type StructType struct {
-	Name            string
+	Name string
+	// DeclModule identifies where the struct was declared: the canonical
+	// path of the declaring module file. "" means unknown (the main program, or
+	// a type built from a bare name) and matches any module (see sameStructDecl).
+	DeclModule string
+	// DeclModuleName is the module's own name, used only to qualify
+	// messages; it takes no part in identity.
+	DeclModuleName  string
 	TypeParams      []TypeParamDef
 	TypeArgs        []Type
 	GenericOrigin   *StructType
@@ -1616,7 +1623,7 @@ func (s *StructType) String() string {
 
 func (s *StructType) Equals(other Type) bool {
 	os, ok := other.(*StructType)
-	if !ok || s.Name != os.Name {
+	if !ok || !sameStructDecl(s, os) {
 		return false
 	}
 	if len(s.TypeArgs) != len(os.TypeArgs) {
@@ -1628,6 +1635,31 @@ func (s *StructType) Equals(other Type) bool {
 		}
 	}
 	return true
+}
+
+// sameStructDecl reports whether a and b are declarations of the same struct:
+// same name declared in the same module. An empty DeclModule means the
+// identity is unknown (the main program, or a type built from a bare name) and
+// matches any module. Type arguments are not compared.
+func sameStructDecl(a, b *StructType) bool {
+	return a.Name == b.Name && (a.DeclModule == "" || b.DeclModule == "" || a.DeclModule == b.DeclModule)
+}
+
+// qualifiedStruct prints a struct type prefixed with its declaring module.
+type qualifiedStruct struct{ st *StructType }
+
+func (q qualifiedStruct) String() string { return q.st.DeclModuleName + "::" + q.st.String() }
+
+// qual returns t for printing in a mismatch message. When t and other print
+// the same but are different structs, t is qualified with its module so
+// that the message tells them apart.
+func qual(t, other Type) fmt.Stringer {
+	a, ok1 := t.(*StructType)
+	b, ok2 := other.(*StructType)
+	if ok1 && ok2 && a.DeclModuleName != "" && a.String() == b.String() && !a.Equals(b) {
+		return qualifiedStruct{a}
+	}
+	return t
 }
 
 type memberCandidate struct {
@@ -2210,6 +2242,8 @@ func InstantiateStruct(s *StructType, typeArgs []Type) *StructType {
 
 	inst := &StructType{
 		Name:            origin.Name,
+		DeclModule:      origin.DeclModule,
+		DeclModuleName:  origin.DeclModuleName,
 		TypeParams:      origin.TypeParams,
 		TypeArgs:        typeArgs,
 		GenericOrigin:   origin,

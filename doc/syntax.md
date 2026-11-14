@@ -223,6 +223,7 @@ def helper(x: Int) -> Int:
   val = math::Sin(math::Pi / 2.0)
   print math::Pi
   ```
+- **Struct Identity**: Structs with the same name declared in different modules are distinct types, whatever alias they are imported under, so `m1::Base` and `m2::Base` are not interchangeable. A struct declared in the main program is not yet distinguished from a same-named struct of an imported module by the type checker.
 
 ### Scope & Rebinding Rules
 - Lexical scoping: Variables declared in inner blocks shadow outer scope variables.

@@ -74,6 +74,8 @@ func (fml *FileModuleLoader) Load(modPath string) (*ModuleType, error) {
 
 	// Type inference in dedicated module inferencer
 	modInf := NewInferencer()
+	modInf.declModule = canonicalModulePath(targetFile)
+	modInf.declModuleName = modName
 	modInf.SetModuleLoader(fml.Load)
 	if err := modInf.InferProgram(prog); err != nil {
 		return nil, fmt.Errorf("type error in module '%s': %w", modName, err)
@@ -100,4 +102,18 @@ func (fml *FileModuleLoader) Load(modPath string) (*ModuleType, error) {
 
 	fml.cache[modPath] = modVal
 	return modVal, nil
+}
+
+// canonicalModulePath returns the identity of a module file: its absolute
+// path with symlinks resolved when possible. It does not depend on the import
+// path or alias used to reach the module.
+func canonicalModulePath(file string) string {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return filepath.Clean(file)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
 }
