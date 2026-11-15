@@ -2876,18 +2876,28 @@ func (inf *Inferencer) inferCallee(callee ast.Expr) (Type, error) {
 	return inf.inferExpr(callee)
 }
 
+// lookupOuterCallable looks up a callee beyond field scopes, rejecting struct
+// instance variables (which hold values rather than type constructors).
+func lookupOuterCallable(sc *Scope, name string) (Type, bool) {
+	outerT, outerSc, found := sc.parent.lookupBeyondFieldsWithScope(name)
+	if !found {
+		return nil, false
+	}
+	// A variable holding a struct instance (not a named struct type) is
+	// not a constructor; do not type-check calls or instantiations on it as outerT.
+	if _, isStructVal := outerT.(*StructType); isStructVal && !outerSc.typeNames[name] {
+		return nil, false
+	}
+	return outerT, true
+}
+
 func (inf *Inferencer) inferIdentCallee(id *ast.Identifier) (Type, error) {
 	t, sc, ok := inf.scope.lookupWithScope(id.Name)
 	if !ok {
 		return TypeUnknown, nil
 	}
 	if sc.isFieldBinding(id.Name) && !isCallableFieldType(t) {
-		if outerT, outerSc, found := sc.parent.lookupBeyondFieldsWithScope(id.Name); found {
-			// A variable holding a struct instance (not a named struct type) is
-			// not a constructor; do not type-check calls to it as constructing outerT.
-			if _, isStructVal := outerT.(*StructType); isStructVal && !outerSc.typeNames[id.Name] {
-				return TypeUnknown, nil
-			}
+		if outerT, found := lookupOuterCallable(sc, id.Name); found {
 			if inf.SkipFieldScope != nil {
 				inf.SkipFieldScope[id] = true
 			}
@@ -2911,8 +2921,18 @@ func (inf *Inferencer) inferIndexCallee(e *ast.IndexExpr) (Type, bool, error) {
 	if !found || !sc.isFieldBinding(targetId.Name) || isCallableFieldType(fieldT) {
 		return nil, false, nil
 	}
-	outerT, _, outerFound := sc.parent.lookupBeyondFieldsWithScope(targetId.Name)
+	outerT, outerFound := lookupOuterCallable(sc, targetId.Name)
 	if !outerFound || !isGenericCalleeType(outerT) {
+		// A struct-typed field holds an instance, not a generic type constructor.
+		if _, isStructField := fieldT.(*StructType); isStructField {
+			if idxId, isId := e.Index.(*ast.Identifier); isId {
+				if _, isVar := inf.scope.Lookup(idxId.Name); !isVar {
+					if _, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
+						return TypeUnknown, true, nil
+					}
+				}
+			}
+		}
 		return nil, false, nil
 	}
 	argT, err := inf.parseTypeAnnot(e.TypeArg)
@@ -2944,8 +2964,11 @@ func (inf *Inferencer) inferTypeInstCallee(e *ast.TypeInstExpr) (Type, bool, err
 	if !found || !sc.isFieldBinding(targetId.Name) || isCallableFieldType(fieldT) {
 		return nil, false, nil
 	}
-	outerT, _, outerFound := sc.parent.lookupBeyondFieldsWithScope(targetId.Name)
+	outerT, outerFound := lookupOuterCallable(sc, targetId.Name)
 	if !outerFound {
+		if _, isStructField := fieldT.(*StructType); isStructField {
+			return nil, false, inf.nodeErr(e, "cannot instantiate type arguments on %s", fieldT.String())
+		}
 		return nil, false, nil
 	}
 	args := make([]Type, len(e.TypeArgs))

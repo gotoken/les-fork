@@ -3553,6 +3553,32 @@ r = W(f: 1).Go()`,
 			varName: "r",
 			want:    "Unknown",
 		},
+		{
+			name: "outer generic struct instance variable does not type b[String](...) as Box[String]",
+			input: `struct Box[T]:
+    v: T
+b = Box[Int](v: 1)
+struct W:
+    b: Int
+    def Go():
+        b[String](v: "hi")
+r = W(b: 1).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "generic struct instance field does not type b[String](...) as Box[String]",
+			input: `struct Box[T]:
+    v: T
+b = Box[Int](v: 1)
+struct W:
+    b: Box[Int]
+    def Go():
+        b[String](v: "hi")
+r = W(b: b).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
 	}
 
 	for _, tt := range tests {
@@ -3620,6 +3646,28 @@ struct W:
             mk("wrong")
         else:
             0`,
+		},
+		{
+			name: "outer multi-type-arg struct instance variable cannot instantiate p[String, Int](...)",
+			input: `struct Pair[A, B]:
+    a: A
+    b: B
+p = Pair[Int, String](a: 1, b: "x")
+struct W:
+    p: Int
+    def Go():
+        p[String, Int](a: "y", b: 2)`,
+		},
+		{
+			name: "multi-type-arg struct instance field cannot instantiate p[String, Int](...)",
+			input: `struct Pair[A, B]:
+    a: A
+    b: B
+p = Pair[Int, String](a: 1, b: "x")
+struct W:
+    p: Pair[Int, String]
+    def Go():
+        p[String, Int](a: "y", b: 2)`,
 		},
 	}
 	for _, tc := range errCases {

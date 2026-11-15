@@ -410,8 +410,9 @@ func TestCallOfNonCallableBindingStillFails(t *testing.T) {
     k: Int
 `
 	tests := []struct {
-		name string
-		code string
+		name    string
+		code    string
+		wantErr string
 	}{
 		{
 			name: "@name call",
@@ -507,6 +508,30 @@ struct W:
         b(k: 1)
 print W(b: 2).Go().k`,
 		},
+		{
+			name:    "outer generic struct instance variable fails with index type arg",
+			wantErr: "undefined identifier: String",
+			code: `struct GBox[T]:
+    v: T
+b = GBox[Int](v: 1)
+struct W:
+    b: Int
+    def Go() -> GBox[String]:
+        b[String](v: "hi")
+print W(b: 2).Go().v`,
+		},
+		{
+			name: "outer multi-type-arg struct instance variable fails",
+			code: `struct GPair[A, B]:
+    a: A
+    b: B
+p = GPair[Int, String](a: 1, b: "x")
+struct W:
+    p: Int
+    def Go() -> GPair[String, Int]:
+        p[String, Int](a: "y", b: 2)
+print W(p: 2).Go().a`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -514,7 +539,11 @@ print W(b: 2).Go().k`,
 			if err == nil {
 				t.Fatalf("expected an error, got output %q", out)
 			}
-			if !strings.Contains(err.Error(), "cannot call non-function value") {
+			wantErr := tt.wantErr
+			if wantErr == "" {
+				wantErr = "cannot call non-function value"
+			}
+			if !strings.Contains(err.Error(), wantErr) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
