@@ -148,7 +148,7 @@ type FuncType struct {
 }
 
 func (f *FuncType) MinArgs() int {
-	if f.MinArity > 0 || (f.Arg != nil && f.MaxArity > 0) {
+	if f.MinArity > 0 || (f.Arg != nil && f.MaxArity != 0) {
 		return f.MinArity
 	}
 	if tup, ok := f.Arg.(*TupleType); ok {
@@ -325,8 +325,227 @@ func (u *UnionType) Equals(other Type) bool {
 	return true
 }
 
+// sameStructAssignable reports whether sSrc is sTarget, respecting type arguments.
+func sameStructAssignable(sSrc, sTarget *StructType, active map[[2]*StructType]bool) bool {
+	if sTarget.Name != sSrc.Name {
+		return false
+	}
+	if len(sTarget.TypeArgs) == 0 {
+		return true
+	}
+	if len(sSrc.TypeArgs) == len(sTarget.TypeArgs) {
+		for i := range sSrc.TypeArgs {
+			if !isAssignableTo(sSrc.TypeArgs[i], sTarget.TypeArgs[i], active) {
+				return false
+			}
+		}
+		return true
+	}
+	if len(sSrc.TypeArgs) == 0 && len(sSrc.TypeParams) == len(sTarget.TypeArgs) {
+		for i, tp := range sSrc.TypeParams {
+			tpType := &TypeParamType{Name: tp.Name, Constraint: tp.Constraint}
+			if !isAssignableTo(tpType, sTarget.TypeArgs[i], active) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// embeddedStructAssignable reports whether sSrc, which embeds (directly or
+// transitively) a struct assignable to sTarget, may be used where sTarget is
+// expected. The value is not converted, so member access on it still sees the
+// members of sSrc: every member that sTarget exposes must therefore resolve on
+// sSrc, without ambiguity, to a type assignable to the one it has on sTarget.
+// active holds the (src, target) pairs whose member compatibility is currently
+// being checked, so that self-referential member types terminate.
+func embeddedStructAssignable(sSrc, sTarget *StructType, active map[[2]*StructType]bool) bool {
+	if !embedsAssignable(sSrc, sTarget, map[*StructType]bool{sSrc: true}, active) {
+		return false
+	}
+	if active == nil {
+		active = make(map[[2]*StructType]bool)
+	}
+	key := [2]*StructType{sSrc, sTarget}
+	if active[key] {
+		return true
+	}
+	active[key] = true
+	defer delete(active, key)
+
+	names := make(map[string]bool)
+	collectMemberNames(sTarget, names, make(map[*StructType]bool))
+	for name := range names {
+		if name == "init" {
+			continue // constructor, not a member of an instance at run time
+		}
+		tt, err := sTarget.LookupMember(name)
+		if err != nil {
+			continue // not accessible on the target either
+		}
+		st, err := sSrc.LookupMember(name)
+		if err != nil || !structMemberAssignable(st, tt, active) {
+			return false
+		}
+	}
+	return true
+}
+
+// structMemberAssignable reports whether a resolved member type st on the outer
+// struct is compatible with the expected member type tt on the embedded struct.
+// For methods, it checks every overload, arity bounds (defaults/variadics),
+// and block parameter requirements in addition to argument/return types.
+func structMemberAssignable(st, tt Type, active map[[2]*StructType]bool) bool {
+	ttFn, ttIsFn := tt.(*FuncType)
+	stFn, stIsFn := st.(*FuncType)
+	if !ttIsFn || !stIsFn {
+		return isAssignableTo(st, tt, active)
+	}
+	targetOverloads := ttFn.Overloads
+	if len(targetOverloads) == 0 {
+		targetOverloads = []*FuncType{ttFn}
+	}
+	srcOverloads := stFn.Overloads
+	if len(srcOverloads) == 0 {
+		srcOverloads = []*FuncType{stFn}
+	}
+	for _, tOv := range targetOverloads {
+		matched := false
+		for _, sOv := range srcOverloads {
+			if singleFuncMemberAssignable(sOv, tOv, active) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func singleFuncMemberAssignable(stFn, ttFn *FuncType, active map[[2]*StructType]bool) bool {
+	if len(stFn.TypeParams) != len(ttFn.TypeParams) {
+		return false
+	}
+	if len(stFn.TypeParams) > 0 {
+		bindings := make(map[string]Type, len(stFn.TypeParams))
+		needSub := false
+		for i, stTP := range stFn.TypeParams {
+			ttTP := ttFn.TypeParams[i]
+			if stTP.Name != ttTP.Name {
+				needSub = true
+			}
+			bindings[stTP.Name] = &TypeParamType{Name: ttTP.Name, Constraint: ttTP.Constraint}
+		}
+		for i, stTP := range stFn.TypeParams {
+			ttTP := ttFn.TypeParams[i]
+			if stTP.Constraint != nil {
+				stConstraint := Substitute(stTP.Constraint, bindings)
+				if ttTP.Constraint == nil || !isAssignableTo(ttTP.Constraint, stConstraint, active) {
+					return false
+				}
+			}
+		}
+		if needSub {
+			stFn = Substitute(stFn, bindings).(*FuncType)
+		}
+	}
+	if ttFn.BlockParam != nil {
+		if stFn.BlockParam == nil || (ttFn.BlockOpt && !stFn.BlockOpt) {
+			return false
+		}
+		if !isAssignableTo(ttFn.BlockParam, stFn.BlockParam, active) {
+			return false
+		}
+	} else if stFn.BlockParam != nil && !stFn.BlockOpt {
+		return false
+	}
+	stMin, ttMin := stFn.MinArgs(), ttFn.MinArgs()
+	if stMin > ttMin {
+		return false
+	}
+	stMax, ttMax := stFn.MaxArgs(), ttFn.MaxArgs()
+	if ttMax < 0 {
+		if stMax >= 0 {
+			return false
+		}
+	} else if stMax >= 0 && stMax < ttMax {
+		return false
+	}
+	if !isAssignableTo(stFn.Ret, ttFn.Ret, active) {
+		return false
+	}
+	if stFn.Arg == TypeUnknown || ttFn.Arg == TypeUnknown {
+		return true
+	}
+	stTup, stOk := stFn.Arg.(*TupleType)
+	ttTup, ttOk := ttFn.Arg.(*TupleType)
+	if !stOk || !ttOk {
+		return isAssignableTo(ttFn.Arg, stFn.Arg, active)
+	}
+	if ttTup.IsVariadic {
+		return isAssignableTo(ttTup, stTup, active)
+	}
+	if stTup.IsVariadic && len(stTup.Elems) == 0 {
+		return true
+	}
+	for i, ttArg := range ttTup.Elems {
+		var stArg Type
+		if i < len(stTup.Elems) {
+			stArg = stTup.Elems[i]
+		} else if stTup.IsVariadic {
+			stArg = stTup.Elems[len(stTup.Elems)-1]
+		} else {
+			return false
+		}
+		if !isAssignableTo(ttArg, stArg, active) {
+			return false
+		}
+	}
+	return true
+}
+
+// embedsAssignable reports whether s embeds, directly or transitively, a
+// struct that is the same as target by sameStructAssignable.
+func embedsAssignable(s, target *StructType, visited map[*StructType]bool, active map[[2]*StructType]bool) bool {
+	for _, emb := range s.Embedded {
+		if visited[emb] {
+			continue
+		}
+		visited[emb] = true
+		if sameStructAssignable(emb, target, active) || embedsAssignable(emb, target, visited, active) {
+			return true
+		}
+	}
+	return false
+}
+
+// collectMemberNames adds the names of the fields and methods of s and of the
+// structs it embeds, transitively, to names.
+func collectMemberNames(s *StructType, names map[string]bool, visited map[*StructType]bool) {
+	if visited[s] {
+		return
+	}
+	visited[s] = true
+	for n := range s.Fields {
+		names[n] = true
+	}
+	for n := range s.Methods {
+		names[n] = true
+	}
+	for _, emb := range s.Embedded {
+		collectMemberNames(emb, names, visited)
+	}
+}
+
 // IsAssignableTo checks if source type can be assigned to target type (handling subtyping and unions).
 func IsAssignableTo(src, target Type) bool {
+	return isAssignableTo(src, target, nil)
+}
+
+func isAssignableTo(src, target Type, active map[[2]*StructType]bool) bool {
 	if src == TypeUnknown || target == TypeUnknown {
 		return true
 	}
@@ -339,7 +558,7 @@ func IsAssignableTo(src, target Type) bool {
 			return true
 		}
 		if tpSrc.Constraint != nil {
-			return IsAssignableTo(tpSrc.Constraint, target)
+			return isAssignableTo(tpSrc.Constraint, target, active)
 		}
 		return false
 	}
@@ -359,7 +578,7 @@ func IsAssignableTo(src, target Type) bool {
 			}
 			if len(ifaceSrc.TypeArgs) == len(ifaceTarget.TypeArgs) {
 				for i := range ifaceSrc.TypeArgs {
-					if !IsAssignableTo(ifaceSrc.TypeArgs[i], ifaceTarget.TypeArgs[i]) {
+					if !isAssignableTo(ifaceSrc.TypeArgs[i], ifaceTarget.TypeArgs[i], active) {
 						return false
 					}
 				}
@@ -368,7 +587,7 @@ func IsAssignableTo(src, target Type) bool {
 			if len(ifaceSrc.TypeArgs) == 0 && len(ifaceSrc.TypeParams) == len(ifaceTarget.TypeArgs) {
 				for i, tp := range ifaceSrc.TypeParams {
 					tpType := &TypeParamType{Name: tp.Name, Constraint: tp.Constraint}
-					if !IsAssignableTo(tpType, ifaceTarget.TypeArgs[i]) {
+					if !isAssignableTo(tpType, ifaceTarget.TypeArgs[i], active) {
 						return false
 					}
 				}
@@ -377,36 +596,19 @@ func IsAssignableTo(src, target Type) bool {
 		}
 		if uSrc, ok := src.(*UnionType); ok {
 			for _, sm := range uSrc.Members {
-				if !IsAssignableTo(sm, target) {
+				if !isAssignableTo(sm, target, active) {
 					return false
 				}
 			}
 			return true
 		}
-		return ImplementsInterface(src, ifaceTarget)
+		return implementsInterface(src, ifaceTarget, active)
 	}
 
 	// If target is StructType and src is StructType
 	if sTarget, ok := target.(*StructType); ok {
-		if sSrc, ok := src.(*StructType); ok && sTarget.Name == sSrc.Name {
-			if len(sTarget.TypeArgs) == 0 {
-				return true
-			}
-			if len(sSrc.TypeArgs) == len(sTarget.TypeArgs) {
-				for i := range sSrc.TypeArgs {
-					if !IsAssignableTo(sSrc.TypeArgs[i], sTarget.TypeArgs[i]) {
-						return false
-					}
-				}
-				return true
-			}
-			if len(sSrc.TypeArgs) == 0 && len(sSrc.TypeParams) == len(sTarget.TypeArgs) {
-				for i, tp := range sSrc.TypeParams {
-					tpType := &TypeParamType{Name: tp.Name, Constraint: tp.Constraint}
-					if !IsAssignableTo(tpType, sTarget.TypeArgs[i]) {
-						return false
-					}
-				}
+		if sSrc, ok := src.(*StructType); ok {
+			if sameStructAssignable(sSrc, sTarget, active) || embeddedStructAssignable(sSrc, sTarget, active) {
 				return true
 			}
 		}
@@ -415,7 +617,7 @@ func IsAssignableTo(src, target Type) bool {
 	// If src is UnionType, every member of src must be assignable to target
 	if uSrc, ok := src.(*UnionType); ok {
 		for _, sm := range uSrc.Members {
-			if !IsAssignableTo(sm, target) {
+			if !isAssignableTo(sm, target, active) {
 				return false
 			}
 		}
@@ -425,7 +627,7 @@ func IsAssignableTo(src, target Type) bool {
 	// If target is UnionType, src must match at least one member
 	if uTarget, ok := target.(*UnionType); ok {
 		for _, m := range uTarget.Members {
-			if IsAssignableTo(src, m) {
+			if isAssignableTo(src, m, active) {
 				return true
 			}
 		}
@@ -439,24 +641,24 @@ func IsAssignableTo(src, target Type) bool {
 			targetArgs, tIsTuple := fTarget.effectiveArgType().(*TupleType)
 			if sIsTuple && tIsTuple {
 				// Contravariant parameter tuple: targetArgs must be assignable to srcArgs
-				if !IsAssignableTo(targetArgs, srcArgs) {
+				if !isAssignableTo(targetArgs, srcArgs, active) {
 					return false
 				}
 			} else {
-				if !IsAssignableTo(fTarget.effectiveArgType(), fSrc.effectiveArgType()) {
+				if !isAssignableTo(fTarget.effectiveArgType(), fSrc.effectiveArgType(), active) {
 					return false
 				}
 			}
 			// Covariant return type
-			return IsAssignableTo(fSrc.Ret, fTarget.Ret)
+			return isAssignableTo(fSrc.Ret, fTarget.Ret, active)
 		}
 	}
 
 	// If both are DictType
 	if dTarget, ok := target.(*DictType); ok {
 		if dSrc, ok := src.(*DictType); ok {
-			keyOK := dSrc.Key == TypeUnknown || IsAssignableTo(dSrc.Key, dTarget.Key)
-			valOK := dSrc.Value == TypeUnknown || IsAssignableTo(dSrc.Value, dTarget.Value)
+			keyOK := dSrc.Key == TypeUnknown || isAssignableTo(dSrc.Key, dTarget.Key, active)
+			valOK := dSrc.Value == TypeUnknown || isAssignableTo(dSrc.Value, dTarget.Value, active)
 			return keyOK && valOK
 		}
 		return false
@@ -501,7 +703,7 @@ func IsAssignableTo(src, target Type) bool {
 					} else {
 						expected = tTarget.Elems[lastTargetIdx]
 					}
-					if !IsAssignableTo(el, expected) {
+					if !isAssignableTo(el, expected, active) {
 						return false
 					}
 				}
@@ -514,7 +716,7 @@ func IsAssignableTo(src, target Type) bool {
 				return false
 			}
 			for i := range tSrc.Elems {
-				if !IsAssignableTo(tSrc.Elems[i], tTarget.Elems[i]) {
+				if !isAssignableTo(tSrc.Elems[i], tTarget.Elems[i], active) {
 					return false
 				}
 			}
@@ -619,6 +821,10 @@ func ResolveInterfaceForReceiver(target *InterfaceType, selfType Type) *Interfac
 
 // ImplementsInterface checks if src type satisfies target interface.
 func ImplementsInterface(src Type, target *InterfaceType) bool {
+	return implementsInterface(src, target, nil)
+}
+
+func implementsInterface(src Type, target *InterfaceType, active map[[2]*StructType]bool) bool {
 	if tpSrc, ok := src.(*TypeParamType); ok {
 		if tpSrc.Constraint != nil {
 			resolvedConstraint := tpSrc.Constraint
@@ -626,7 +832,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 				resolvedConstraint = ResolveInterfaceForReceiver(cIface, tpSrc)
 			}
 			resolvedTarget := ResolveInterfaceForReceiver(target, tpSrc)
-			return ImplementsInterface(resolvedConstraint, resolvedTarget)
+			return implementsInterface(resolvedConstraint, resolvedTarget, active)
 		}
 		return false
 	}
@@ -653,7 +859,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			return true
 		}
 		for _, emb := range srcIface.Embedded {
-			if ImplementsInterface(emb, origTarget) {
+			if implementsInterface(emb, origTarget, active) {
 				return true
 			}
 		}
@@ -663,7 +869,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			}
 			if len(srcIface.TypeArgs) == len(target.TypeArgs) {
 				for j := range srcIface.TypeArgs {
-					if !IsAssignableTo(srcIface.TypeArgs[j], target.TypeArgs[j]) {
+					if !isAssignableTo(srcIface.TypeArgs[j], target.TypeArgs[j], active) {
 						return false
 					}
 				}
@@ -679,13 +885,13 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 				if srcSig.MinArgs() > 1 || (srcSig.MaxArgs() >= 0 && srcSig.MaxArgs() < 1) {
 					return false
 				}
-				if !IsAssignableTo(srcSig.Ret, TypeBool) {
+				if !isAssignableTo(srcSig.Ret, TypeBool, active) {
 					return false
 				}
 				if len(target.TypeArgs) == 1 {
 					tup, ok := srcSig.Arg.(*TupleType)
 					if ok && len(tup.Elems) == 1 {
-						if !IsAssignableTo(target.TypeArgs[0], tup.Elems[0]) {
+						if !isAssignableTo(target.TypeArgs[0], tup.Elems[0], active) {
 							return false
 						}
 					}
@@ -694,13 +900,13 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			}
 			if target.Name == "Numeric" {
 				if mName == "Int" {
-					if srcSig.MinArgs() > 0 || !IsAssignableTo(srcSig.Ret, TypeInt) {
+					if srcSig.MinArgs() > 0 || !isAssignableTo(srcSig.Ret, TypeInt, active) {
 						return false
 					}
 					continue
 				}
 				if mName == "Float" {
-					if srcSig.MinArgs() > 0 || !IsAssignableTo(srcSig.Ret, TypeFloat) {
+					if srcSig.MinArgs() > 0 || !isAssignableTo(srcSig.Ret, TypeFloat, active) {
 						return false
 					}
 					continue
@@ -709,7 +915,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 					if srcSig.MinArgs() > 0 {
 						return false
 					}
-					if len(target.TypeArgs) == 1 && !IsAssignableTo(srcSig.Ret, target.TypeArgs[0]) {
+					if len(target.TypeArgs) == 1 && !isAssignableTo(srcSig.Ret, target.TypeArgs[0], active) {
 						return false
 					}
 					continue
@@ -720,11 +926,11 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 					}
 					if len(target.TypeArgs) == 1 {
 						expectedT := target.TypeArgs[0]
-						if !IsAssignableTo(srcSig.Ret, expectedT) {
+						if !isAssignableTo(srcSig.Ret, expectedT, active) {
 							return false
 						}
 						if tup, ok := srcSig.Arg.(*TupleType); ok && len(tup.Elems) == 1 {
-							if !IsAssignableTo(expectedT, tup.Elems[0]) {
+							if !isAssignableTo(expectedT, tup.Elems[0], active) {
 								return false
 							}
 						}
@@ -732,12 +938,12 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 					continue
 				}
 			}
-			if !targetSig.Equals(srcSig) && !IsAssignableTo(srcSig, targetSig) {
+			if !targetSig.Equals(srcSig) && !isAssignableTo(srcSig, targetSig, active) {
 				return false
 			}
 		}
 		for _, emb := range target.Embedded {
-			if !ImplementsInterface(src, emb) {
+			if !implementsInterface(src, emb, active) {
 				return false
 			}
 		}
@@ -757,7 +963,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			}
 			if target.Name == "Indexable" {
 				if mName == "Len" {
-					if fnT.MinArgs() > 0 || !IsAssignableTo(fnT.Ret, TypeInt) {
+					if fnT.MinArgs() > 0 || !isAssignableTo(fnT.Ret, TypeInt, active) {
 						return false
 					}
 					continue
@@ -770,7 +976,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 						targetKey := target.TypeArgs[0]
 						targetVal := target.TypeArgs[1]
 						if tup, ok := fnT.Arg.(*TupleType); ok && len(tup.Elems) == 1 {
-							if !IsAssignableTo(targetKey, tup.Elems[0]) || !IsAssignableTo(fnT.Ret, targetVal) {
+							if !isAssignableTo(targetKey, tup.Elems[0], active) || !isAssignableTo(fnT.Ret, targetVal, active) {
 								return false
 							}
 						}
@@ -778,10 +984,10 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 					continue
 				}
 			}
-			matched := targetSig.Equals(fnT) || IsAssignableTo(fnT, targetSig)
+			matched := targetSig.Equals(fnT) || isAssignableTo(fnT, targetSig, active)
 			if !matched && len(fnT.Overloads) > 0 {
 				for _, ov := range fnT.Overloads {
-					if targetSig.Equals(ov) || IsAssignableTo(ov, targetSig) {
+					if targetSig.Equals(ov) || isAssignableTo(ov, targetSig, active) {
 						matched = true
 						break
 					}
@@ -792,7 +998,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			}
 		}
 		for _, emb := range target.Embedded {
-			if !ImplementsInterface(src, emb) {
+			if !implementsInterface(src, emb, active) {
 				return false
 			}
 		}
@@ -802,7 +1008,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 	// For other types (e.g. primitives, tuples, dicts), check if built-in methods satisfy target
 	if len(target.Methods) == 0 {
 		for _, emb := range target.Embedded {
-			if !ImplementsInterface(src, emb) {
+			if !implementsInterface(src, emb, active) {
 				return false
 			}
 		}
@@ -816,7 +1022,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 		}
 		if target.Name == "Indexable" {
 			if mName == "Len" {
-				if !IsAssignableTo(srcSig.Ret, TypeInt) {
+				if !isAssignableTo(srcSig.Ret, TypeInt, active) {
 					return false
 				}
 				tup, ok := srcSig.Arg.(*TupleType)
@@ -833,17 +1039,17 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 				if len(target.TypeArgs) == 2 {
 					targetKey := target.TypeArgs[0]
 					targetVal := target.TypeArgs[1]
-					if !IsAssignableTo(targetKey, tup.Elems[0]) || !IsAssignableTo(srcSig.Ret, targetVal) {
+					if !isAssignableTo(targetKey, tup.Elems[0], active) || !isAssignableTo(srcSig.Ret, targetVal, active) {
 						return false
 					}
 				}
 				continue
 			}
 		}
-		matched := targetSig.Equals(srcSig) || IsAssignableTo(srcSig, targetSig)
+		matched := targetSig.Equals(srcSig) || isAssignableTo(srcSig, targetSig, active)
 		if !matched && len(srcSig.Overloads) > 0 {
 			for _, ov := range srcSig.Overloads {
-				if targetSig.Equals(ov) || IsAssignableTo(ov, targetSig) {
+				if targetSig.Equals(ov) || isAssignableTo(ov, targetSig, active) {
 					matched = true
 					break
 				}
@@ -853,11 +1059,11 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 			if targetTup, ok := targetSig.Arg.(*TupleType); ok {
 				targetCount := len(targetTup.Elems)
 				if targetCount >= srcSig.MinArgs() && (srcSig.MaxArgs() < 0 || targetCount <= srcSig.MaxArgs()) {
-					if targetSig.Ret == TypeUnknown || srcSig.Ret == TypeUnknown || targetSig.Ret.Equals(srcSig.Ret) || IsAssignableTo(srcSig.Ret, targetSig.Ret) {
+					if targetSig.Ret == TypeUnknown || srcSig.Ret == TypeUnknown || targetSig.Ret.Equals(srcSig.Ret) || isAssignableTo(srcSig.Ret, targetSig.Ret, active) {
 						argsMatch := true
 						if srcTup, ok := srcSig.Arg.(*TupleType); ok {
 							for i := 0; i < targetCount && i < len(srcTup.Elems); i++ {
-								if targetTup.Elems[i] != TypeUnknown && srcTup.Elems[i] != TypeUnknown && !targetTup.Elems[i].Equals(srcTup.Elems[i]) && !IsAssignableTo(targetTup.Elems[i], srcTup.Elems[i]) {
+								if targetTup.Elems[i] != TypeUnknown && srcTup.Elems[i] != TypeUnknown && !targetTup.Elems[i].Equals(srcTup.Elems[i]) && !isAssignableTo(targetTup.Elems[i], srcTup.Elems[i], active) {
 									argsMatch = false
 									break
 								}
@@ -875,7 +1081,7 @@ func ImplementsInterface(src Type, target *InterfaceType) bool {
 		}
 	}
 	for _, emb := range target.Embedded {
-		if !ImplementsInterface(src, emb) {
+		if !implementsInterface(src, emb, active) {
 			return false
 		}
 	}
