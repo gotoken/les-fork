@@ -1589,6 +1589,168 @@ func (env *Environment) newThunk(expr ast.Expr) *Thunk {
 	return thunk
 }
 
+func isTypeDefRuntimeValue(v Value) bool {
+	if ev, evaluated := PeekEvaluated(v); evaluated {
+		v = ev
+	}
+	switch c := v.(type) {
+	case *StructDefValue, *InterfaceDefValue:
+		return true
+	case *BuiltinFunc:
+		return c.TypeDef != nil
+	default:
+		return false
+	}
+}
+
+func isGenericRuntimeCallee(v Value) bool {
+	switch c := v.(type) {
+	case *StructDefValue:
+		return len(c.TypeParams) > 0
+	case *Closure:
+		return len(c.TypeParams) > 0
+	case *InterfaceDefValue:
+		return len(c.TypeParams) > 0
+	case *BuiltinFunc:
+		return true
+	default:
+		return false
+	}
+}
+
+// evalCallee evaluates the callee of a CallExpr. When the callee is a bare
+// identifier (or explicit generic type application on one) bound in a receiver
+// field scope to a non-callable field, resolution continues past field scopes to
+// an enclosing function, generic function, builtin, or struct definition.
+func (env *Environment) evalCallee(callee ast.Expr) (Value, error) {
+	switch e := callee.(type) {
+	case *ast.Identifier:
+		return env.evalIdentCallee(e)
+	case *ast.IndexExpr:
+		if v, handled, err := env.evalIndexCallee(e); err != nil {
+			return nil, err
+		} else if handled {
+			return v, nil
+		}
+	case *ast.TypeInstExpr:
+		if v, handled, err := env.evalTypeInstCallee(e); err != nil {
+			return nil, err
+		} else if handled {
+			return v, nil
+		}
+	}
+	return Force(NewThunk(callee, env)), nil
+}
+
+// fieldMayBeCallable reports whether a receiver field binding must be kept as
+// the call target rather than resolved past field scopes. Static field types
+// are inspected first so unused non-callable fields stay lazy; untyped fields
+// are forced at runtime.
+func fieldMayBeCallable(scope *Environment, name string, v Value) bool {
+	if ft, hasType := fieldDeclaredType(scope, name); hasType && ft != types.TypeUnknown {
+		return isStaticallyCallableType(ft)
+	}
+	if ev, evaluated := PeekEvaluated(v); evaluated {
+		return isCallableRuntimeValue(ev)
+	}
+	return isCallableRuntimeValue(Force(v))
+}
+
+func (env *Environment) evalIdentCallee(id *ast.Identifier) (Value, error) {
+	v, scope, found := env.getWithScope(id.Name)
+	if !found {
+		return nil, fmt.Errorf("undefined identifier: %s", id.Name)
+	}
+	if !scope.isFieldScope {
+		return Force(v), nil
+	}
+	if env != nil && env.Inferencer != nil {
+		if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.SkipFieldScope != nil && inf.SkipFieldScope[id] {
+			if outer, ok := env.calleeBeyondFields(id.Name); ok {
+				return outer, nil
+			}
+			return Force(v), nil
+		}
+	}
+	if fieldMayBeCallable(scope, id.Name, v) {
+		// Fields typed or evaluated as callable (including unions like `(() -> Void) | Nil`)
+		// never fall back to an outer function if nil or non-function at runtime.
+		return Force(v), nil
+	}
+	if outer, ok := env.calleeBeyondFields(id.Name); ok {
+		return outer, nil
+	}
+	return Force(v), nil
+}
+
+func (env *Environment) evalIndexCallee(e *ast.IndexExpr) (Value, bool, error) {
+	targetId, ok := e.Target.(*ast.Identifier)
+	if !ok || e.TypeArg == "" {
+		return nil, false, nil
+	}
+	v, scope, found := env.getWithScope(targetId.Name)
+	if !found || !scope.isFieldScope {
+		return nil, false, nil
+	}
+	if env != nil && env.Inferencer != nil {
+		if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.TypeAppExprs != nil && inf.TypeAppExprs[e] {
+			if outer, ok := env.calleeBeyondFields(targetId.Name); ok {
+				spec, err := specializeGenericValue(outer, []string{e.TypeArg}, env)
+				return spec, true, err
+			}
+			return nil, false, nil
+		}
+	}
+	if fieldMayBeCallable(scope, targetId.Name, v) {
+		return nil, false, nil
+	}
+	if idxId, isId := e.Index.(*ast.Identifier); isId {
+		if rtVal, isVar := env.Get(idxId.Name); isVar && !isTypeDefRuntimeValue(rtVal) {
+			return nil, false, nil
+		}
+	}
+	resolvedArg := env.substituteTypeParams(e.TypeArg)
+	parsedT, err := parseTypeAnnotInEnv(resolvedArg, env)
+	if err != nil || (parsedT == types.TypeUnknown && strings.TrimSpace(resolvedArg) != "Unknown") {
+		return nil, false, nil
+	}
+	outer, ok := env.calleeBeyondFields(targetId.Name)
+	if !ok || !isGenericRuntimeCallee(outer) {
+		return nil, false, nil
+	}
+	spec, err := specializeGenericValue(outer, []string{e.TypeArg}, env)
+	return spec, true, err
+}
+
+func (env *Environment) evalTypeInstCallee(e *ast.TypeInstExpr) (Value, bool, error) {
+	targetId, ok := e.Target.(*ast.Identifier)
+	if !ok {
+		return nil, false, nil
+	}
+	v, scope, found := env.getWithScope(targetId.Name)
+	if !found || !scope.isFieldScope {
+		return nil, false, nil
+	}
+	if env != nil && env.Inferencer != nil {
+		if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.SkipFieldScope != nil && inf.SkipFieldScope[targetId] {
+			if outer, ok := env.calleeBeyondFields(targetId.Name); ok {
+				spec, err := specializeGenericValue(outer, e.TypeArgs, env)
+				return spec, true, err
+			}
+			return nil, false, nil
+		}
+	}
+	if fieldMayBeCallable(scope, targetId.Name, v) {
+		return nil, false, nil
+	}
+	outer, ok := env.calleeBeyondFields(targetId.Name)
+	if !ok {
+		return nil, false, nil
+	}
+	spec, err := specializeGenericValue(outer, e.TypeArgs, env)
+	return spec, true, err
+}
+
 func (env *Environment) evalStmt(stmt ast.Stmt) (Value, error) {
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
@@ -2475,7 +2637,10 @@ func (env *Environment) evalExpr(expr ast.Expr) (Value, error) {
 		return env.evalExpr(e.Else)
 
 	case *ast.CallExpr:
-		calleeVal := Force(NewThunk(e.Callee, env))
+		calleeVal, err := env.evalCallee(e.Callee)
+		if err != nil {
+			return nil, err
+		}
 
 		// Prepare argument thunks (pass-by-need) unless force-demanded or constant literal
 		argValues := make([]Value, len(e.Args))

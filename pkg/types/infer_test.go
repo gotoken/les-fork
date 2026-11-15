@@ -3357,3 +3357,283 @@ func TestInlineFuncBodyInference(t *testing.T) {
 		})
 	}
 }
+
+func TestCallNotHiddenByNonCallableFieldTypes(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		varName string
+		want    string
+	}{
+		{
+			name: "outer function call infers exact return type",
+			input: `struct Base:
+    k: Int
+def mk(k: Int) -> Base:
+    Base(k: k)
+struct W:
+    mk: Int
+    def Go() -> Base:
+        mk(3)
+r = W(mk: 1).Go()`,
+			varName: "r",
+			want:    "Base",
+		},
+		{
+			name: "generic outer function call infers return type and CallTypeArgs",
+			input: `def wrap[T](x: T) -> (T, T):
+    (x, x)
+def pair[A, B](a: A, b: B) -> (A, B):
+    (a, b)
+struct W:
+    wrap: Int
+    pair: Int
+    def Go():
+        wrap(7)
+    def GoExplicit():
+        wrap[Int](7)
+    def GoPair():
+        pair[Int, String](1, "a")
+w = W(wrap: 1, pair: 1)
+r1 = w.Go()
+r2 = w.GoExplicit()
+r3 = w.GoPair()`,
+			varName: "r3",
+			want:    "(Int, String)",
+		},
+		{
+			name: "embedded generic struct constructor Box[Int] and Pair[Int, String]",
+			input: `struct Box[T]:
+    v: T
+struct Pair[A, B]:
+    first: A
+    second: B
+struct Derived:
+    Box[Int]
+    Pair[Int, String]
+    def MakeBox():
+        Box[Int](v: @v + 1)
+    def MakePair():
+        Pair[Int, String](first: @first, second: @second)
+d = Derived(Box: Box[Int](v: 1), Pair: Pair[Int, String](first: 2, second: "s"))
+rb = d.MakeBox()
+rp = d.MakePair()`,
+			varName: "rp",
+			want:    "Pair[Int, String]",
+		},
+		{
+			name: "generic method instantiating embedded Box[T]",
+			input: `struct Box[T]:
+    v: T
+struct Derived[T]:
+    Box[T]
+    def Wrap(x: T):
+        Box[T](v: x)
+r = Derived[Int](Box: Box[Int](v: 1)).Wrap(42)`,
+			varName: "r",
+			want:    "Box[Int]",
+		},
+		{
+			name: "Box[0]() indexes field while Box[Int]() constructs Box[Int]",
+			input: `struct Box[T]:
+    v: T
+    def [](i: Int) -> () -> T:
+        ||: @v
+struct Derived:
+    Box[Int]
+    def Build():
+        Box[Int](v: @v)
+    def AtZero():
+        Box[0]()
+d = Derived(Box: Box[Int](v: 5))
+r1 = d.Build()
+r2 = d.AtZero()`,
+			varName: "r2",
+			want:    "Int",
+		},
+		{
+			name: "named struct field b: Base is not typed as constructor Base(...)",
+			input: `struct Base:
+    k: Int
+struct W:
+    b: Base
+    def Go():
+        b(k: 1)
+r = W(b: Base(k: 1)).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "union-callable field does not inherit outer function return type",
+			input: `def on_done() -> String:
+    "outer"
+struct Task:
+    on_done: (() -> Int) | Nil = nil
+    def Run():
+        on_done()
+r = Task().Run()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "if narrowing on non-callable field preserves outer function return type",
+			input: `struct Base:
+    k: Int
+def mk(x: Int) -> Base:
+    Base(k: x)
+struct W:
+    mk: Int | Nil
+    def Go():
+        if mk != nil:
+            mk(5)
+        else:
+            mk(0)
+r = W(mk: 1).Go()`,
+			varName: "r",
+			want:    "Base",
+		},
+		{
+			name: "match narrowing on non-callable field preserves outer function return type",
+			input: `struct Base:
+    k: Int
+def mk(x: Int) -> Base:
+    Base(k: x)
+struct W:
+    mk: Int | Nil
+    def Go():
+        match mk:
+            case Nil:
+                mk(0)
+            case Int:
+                mk(5)
+r = W(mk: 1).Go()`,
+			varName: "r",
+			want:    "Base",
+		},
+		{
+			name: "if narrowing on b: Base | Nil does not treat b(...) as Base constructor",
+			input: `struct Base:
+    k: Int
+struct W:
+    b: Base | Nil
+    def Go():
+        if b != nil:
+            b(k: 1)
+        else:
+            nil
+r = W(b: nil).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "outer struct instance variable does not type b(...) as constructor",
+			input: `struct Base:
+    k: Int
+b = Base(k: 1)
+struct W:
+    b: Int
+    def Go():
+        b(k: 1)
+r = W(b: 1).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "narrowing union-callable field f: (() -> Int) | Int to Int does not fall back to outer f",
+			input: `def f(x: Int) -> String:
+    "outer"
+struct W:
+    f: (() -> Int) | Int
+    def Go():
+        if f is Int:
+            f(1)
+        else:
+            nil
+r = W(f: 1).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer(tt.input)
+			p := parser.NewParser(l)
+			prog := p.ParseProgram()
+			if len(p.Errors()) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors())
+			}
+			inf := NewInferencer()
+			if err := inf.InferProgram(prog); err != nil {
+				t.Fatalf("type inference error: %v", err)
+			}
+			got, ok := inf.scope.Lookup(tt.varName)
+			if !ok {
+				t.Fatalf("variable %q not found", tt.varName)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("expected %s to be %s, got %s", tt.varName, tt.want, got)
+			}
+		})
+	}
+
+	// Argument type mismatch on outer function/generic must still be caught.
+	errCases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name: "wrong argument type for outer function shadowed by field",
+			input: `def mk(k: Int) -> Int:
+    k + 1
+struct W:
+    mk: Int
+    def Go() -> Int:
+        mk("wrong")`,
+		},
+		{
+			name: "wrong argument type for outer generic function shadowed by field",
+			input: `def wrap[T](x: T) -> T:
+    x
+struct W:
+    wrap: Int
+    def Go() -> Int:
+        wrap[Int]("wrong")`,
+		},
+		{
+			name: "wrong argument type for embedded Box[Int] constructor",
+			input: `struct Box[T]:
+    v: T
+struct Derived:
+    Box[Int]
+    def Make():
+        Box[Int](v: "wrong")`,
+		},
+		{
+			name: "wrong argument type for outer function inside if narrowing",
+			input: `def mk(k: Int) -> Int:
+    k + 1
+struct W:
+    mk: Int | Nil
+    def Go() -> Int:
+        if mk != nil:
+            mk("wrong")
+        else:
+            0`,
+		},
+	}
+	for _, tc := range errCases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := lexer.NewLexer(tc.input)
+			p := parser.NewParser(l)
+			prog := p.ParseProgram()
+			if len(p.Errors()) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors())
+			}
+			inf := NewInferencer()
+			if err := inf.InferProgram(prog); err == nil {
+				t.Fatalf("expected type inference error, got nil")
+			}
+		})
+	}
+}
