@@ -1,7 +1,9 @@
 package types
 
 import (
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"les/pkg/lexer"
@@ -158,6 +160,93 @@ def use(f: () -> Base) -> Int:
 use(mk)
 `,
 		},
+		{
+			name: "compatible overloaded operator methods",
+			code: `struct Num:
+    n: Int
+    +() -> Int:
+        @n
+    +(o: Int) -> Int:
+        @n + o
+struct SubNum:
+    Num
+    +() -> Int:
+        @n * 2
+    +(o: Int) -> Int:
+        @n + o + 1
+def f(x: Num) -> Int:
+    (+x) + (x + 1)
+f(SubNum(Num: Num(n: 3)))
+`,
+		},
+		{
+			name: "extra trailing default parameter on outer method",
+			code: `struct Base:
+    k: Int
+    def Foo(x: Int) -> Int:
+        @k + x
+struct Derived:
+    Base
+    def Foo(x: Int, y: String = "a") -> Int:
+        @k + x
+def f(b: Base) -> Int:
+    b.Foo(1)
+f(Derived(Base: Base(k: 2)))
+`,
+		},
+		{
+			name: "self-referential interface methods",
+			code: `interface IHolder[T]:
+    Get(): T
+interface ISubHolder[T]:
+    Get(): T
+struct Wrap[T]:
+    v: T
+    def Get() -> T:
+        @v
+struct Base:
+    k: Int
+    def Wrap() -> IHolder[Base]:
+        Wrap[Base](v: self)
+struct Derived:
+    Base
+    def Wrap() -> ISubHolder[Derived]:
+        Wrap[Derived](v: self)
+def f(b: Base) -> Int:
+    b.Wrap().Get().k
+f(Derived(Base: Base(k: 1)))
+`,
+		},
+		{
+			name: "variadic method with default parameter",
+			code: `struct Base:
+    k: Int
+    def Foo(*rest) -> Int:
+        @k
+struct Derived:
+    Base
+    def Foo(x: Int = 0, *rest) -> Int:
+        @k + x
+def f(b: Base) -> Int:
+    b.Foo()
+f(Derived(Base: Base(k: 1)))
+`,
+		},
+		{
+			name: "generic method with renamed type parameter",
+			code: `struct Base:
+    k: Int
+    def Id[T](x: T) -> T:
+        x
+struct Derived:
+    Base
+    def Id[U](x: U) -> U:
+        x
+def f(b: Base) -> Int:
+    b.Id[Int](1)
+f(Derived(Base: Base(k: 1)))
+`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,6 +397,102 @@ def use(f: () -> Derived) -> Int:
 use(mk)
 `,
 		},
+		{
+			name: "outer shadows overloaded operator with single overload",
+			code: `struct Num:
+    n: Int
+    +() -> Int:
+        @n
+    +(o: Int) -> Int:
+        @n + o
+struct SubNum:
+    Num
+    +(o: Int) -> Int:
+        @n + o + 1
+def f(x: Num) -> Int:
+    +x
+f(SubNum(Num: Num(n: 1)))
+`,
+		},
+		{
+			name: "outer swaps overloaded operator return types",
+			code: `struct Num:
+    n: Int
+    +() -> String:
+        "s"
+    +(o: Int) -> Int:
+        @n + o
+struct SubNum:
+    Num
+    +() -> Int:
+        @n
+    +(o: Int) -> String:
+        "bad"
+def f(x: Num) -> String:
+    +x
+f(SubNum(Num: Num(n: 1)))
+`,
+		},
+		{
+			name: "outer drops default parameter from method",
+			code: `struct Base:
+    k: Int
+    def Foo(x: Int = 0) -> Int:
+        @k + x
+struct Derived:
+    Base
+    def Foo(x: Int) -> Int:
+        @k + x
+def f(b: Base) -> Int:
+    b.Foo()
+f(Derived(Base: Base(k: 1)))
+`,
+		},
+		{
+			name: "outer makes optional block parameter required",
+			code: `struct Base:
+    k: Int
+    def Foo(&blk = nil) -> Int:
+        @k
+struct Derived:
+    Base
+    def Foo(&blk) -> Int:
+        blk()
+def f(b: Base) -> Int:
+    b.Foo()
+f(Derived(Base: Base(k: 1)))
+`,
+		},
+		{
+			name: "outer drops default before variadic parameter",
+			code: `struct Base:
+    k: Int
+    def Foo(x: Int = 0, *rest) -> Int:
+        @k + x
+struct Derived:
+    Base
+    def Foo(x: Int, *rest) -> Int:
+        @k + x
+def f(b: Base) -> Int:
+    b.Foo()
+f(Derived(Base: Base(k: 1)))
+`,
+		},
+		{
+			name: "outer tightens generic method constraint",
+			code: `struct Base:
+    k: Int
+    def Id[T](x: T) -> T:
+        x
+struct Derived:
+    Base
+    def Id[T: Equatable](x: T) -> T:
+        x
+def f(b: Base) -> Int:
+    b.Id[Int](1)
+f(Derived(Base: Base(k: 1)))
+`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -316,5 +501,48 @@ use(mk)
 				t.Fatalf("expected a type mismatch error, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestEmbeddedStructAssignableConcurrent(t *testing.T) {
+	code := `struct Base:
+    k: Int
+    def Clone() -> Base:
+        Base(k: @k)
+struct Derived:
+    Base
+    def Clone() -> Derived:
+        Derived(Base: Base(k: @k))
+def f(b: Base) -> Base:
+    b.Clone()
+f(Derived(Base: Base(k: 1)))
+`
+	const workers = 8
+	const iters = 25
+	var wg sync.WaitGroup
+	errs := make(chan error, workers*iters)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				p := parser.NewParser(lexer.NewLexer(code))
+				prog := p.ParseProgram()
+				if len(p.Errors()) > 0 {
+					errs <- fmt.Errorf("parse errors: %v", p.Errors())
+					continue
+				}
+				if err := NewInferencer().InferProgram(prog); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected concurrent type error: %v", err)
+		}
 	}
 }
