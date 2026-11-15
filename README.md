@@ -85,6 +85,29 @@ Comprehensive documentation is organized into dedicated guides in the [`doc/`](d
 - [**Standard Library & Built-in Reference**](doc/reference.md):
   Complete reference manual for built-in functions (`print`, `exit`, `gets`), predefined variables (`Args`, `Stdin`, `Stdout`, `Stderr`), primitive type methods, core interfaces (`Show`, `Equatable`, `Comparable`, `Indexable`, `Numeric`), and standard library modules (`io`, `bufio`).
 
+## JSON example
+
+The [JSON example](examples/json.les) implements `json::Marshal` and `json::Unmarshal` in Les. Run the demo from the repository root.
+
+```bash
+go run ./cmd/les examples/json_demo.les
+```
+
+Use `import json` from a script in `examples/`. To use it from another directory, place `json.les`, `json_decode.les`, `json_encode.les`, and `json_errors.les` next to the script. Les resolves imports from the entry script's directory.
+
+| JSON | Les |
+| --- | --- |
+| `null` | `nil` |
+| Boolean | `Bool` |
+| String | `String` |
+| Number | `Float` on decoding, `Int` or finite `Float` on encoding |
+| Array | Finite `Tuple` |
+| Object | `Dict` with `String` keys |
+
+`Unmarshal(text)` reads one complete value. For repeated object keys, the last value wins. Invalid JSON or a number outside the `Float` range returns an `Error`. Import `json_errors` to inspect a `SyntaxError.Offset`, which uses one-based byte positions.
+
+`Marshal(value)` returns compact JSON with sorted object keys, or an `Error` for an unsupported type or value. Both functions allow up to 128 nested containers. The example follows Go's function names and default numeric decoding, with Les return values and `Error` unions.
+
 ---
 
 ## Build & Installation

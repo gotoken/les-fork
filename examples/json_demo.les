@@ -1,0 +1,14 @@
+import json
+
+source = '{"ready":true,"count":2,"items":["東京",null]}'
+decoded = json::Unmarshal(source)
+if decoded is Error:
+    print decoded.Message(), "\n"
+    exit(1)
+
+encoded = json::Marshal(decoded)
+if encoded is Error:
+    print encoded.Message(), "\n"
+    exit(1)
+
+print encoded, "\n"

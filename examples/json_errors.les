@@ -1,0 +1,38 @@
+module json_errors
+
+struct SyntaxError:
+    Offset: Int
+    Detail: String
+
+    def Message(): String:
+        "json: " + self.Detail + " at byte " + self.Offset.String()
+
+    def Error(): String:
+        self.Message()
+
+    def Inspect(): String:
+        self.Message()
+
+struct UnsupportedTypeError:
+    ValueType: String
+
+    def Message(): String:
+        "json: unsupported type " + self.ValueType
+
+    def Error(): String:
+        self.Message()
+
+    def Inspect(): String:
+        self.Message()
+
+struct UnsupportedValueError:
+    Detail: String
+
+    def Message(): String:
+        "json: unsupported value: " + self.Detail
+
+    def Error(): String:
+        self.Message()
+
+    def Inspect(): String:
+        self.Message()

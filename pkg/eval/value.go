@@ -449,16 +449,7 @@ func inspectValueWithContext(v Value, visited map[any]bool, depth int) string {
 		visited[val] = true
 		defer delete(visited, val)
 
-		keys := make([]DictKey, 0, len(val.Entries))
-		for k := range val.Entries {
-			keys = append(keys, k)
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			if keys[i].Type != keys[j].Type {
-				return keys[i].Type < keys[j].Type
-			}
-			return keys[i].Key < keys[j].Key
-		})
+		keys := val.sortedKeys()
 
 		var sb strings.Builder
 		sb.WriteString("{")
@@ -686,6 +677,35 @@ func NewDictValue(entries map[DictKey]Value, keyValues ...map[DictKey]Value) *Di
 	}
 }
 
+func (d *DictValue) sortedKeys() []DictKey {
+	keys := make([]DictKey, 0, len(d.Entries))
+	for k := range d.Entries {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Type != keys[j].Type {
+			return keys[i].Type < keys[j].Type
+		}
+		return keys[i].Key < keys[j].Key
+	})
+	return keys
+}
+
+func (d *DictValue) withEntry(key Value, value Value) *DictValue {
+	entries := make(map[DictKey]Value, len(d.Entries)+1)
+	for k, v := range d.Entries {
+		entries[k] = v
+	}
+	keyValues := make(map[DictKey]Value, len(d.KeyValues)+1)
+	for k, original := range d.KeyValues {
+		keyValues[k] = original
+	}
+	dictKey := MakeDictKey(key)
+	entries[dictKey] = value
+	keyValues[dictKey] = key
+	return NewDictValue(entries, keyValues)
+}
+
 func (d *DictValue) Inspect() string {
 	return InspectValue(d)
 }
@@ -702,16 +722,7 @@ func (d *DictValue) stringWithVisited(visited map[any]bool, depth int) string {
 	visited[d] = true
 	defer delete(visited, d)
 
-	keys := make([]DictKey, 0, len(d.Entries))
-	for k := range d.Entries {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].Type != keys[j].Type {
-			return keys[i].Type < keys[j].Type
-		}
-		return keys[i].Key < keys[j].Key
-	})
+	keys := d.sortedKeys()
 
 	var sb strings.Builder
 	sb.WriteString("{")

@@ -1,0 +1,256 @@
+module json_decode
+
+import json_errors
+
+struct ParseResult:
+    value: Nil | Bool | String | Float | Tuple | Dict
+    next: Int
+
+struct Decoder:
+    source: String
+    length: Int
+
+    def Decode(): Nil | Bool | String | Float | Tuple | Dict | Error:
+        result = self.readValue(0, 0)
+        if result is ParseResult:
+            end = self.skipSpace(result.next)
+            if end != self.length:
+                return self.syntaxError(end, "unexpected text after the value")
+            return result.value
+        else:
+            return result
+
+    # The cursor counts runes. Error offsets count bytes from one.
+    def syntaxError(pos: Int, detail: String): Error:
+        offset = 0
+        bytes = self.source.Bytes()
+        length = bytes.Len()
+        i = 0
+        for i < pos:
+            ch = self.source[i]
+            width = ch.Bytes().Len()
+            # String indexing replaces each invalid input byte with a replacement rune.
+            if ch == "�":
+                if offset + 2 >= length || bytes[offset] != 0xef || bytes[offset + 1] != 0xbf || bytes[offset + 2] != 0xbd:
+                    width = 1
+            offset = offset + width
+            i = i + 1
+        json_errors::SyntaxError(offset + 1, detail)
+
+    def peek(pos: Int): String:
+        pos < self.length ? self.source[pos] : ""
+
+    def skipSpace(start: Int): Int:
+        pos = start
+        for:
+            ch = self.peek(pos)
+            if ch != " " && ch != "\t" && ch != "\n" && ch != "\r":
+                return pos
+            pos = pos + 1
+
+    def readValue(start: Int, depth: Int): ParseResult | Error:
+        pos = self.skipSpace(start)
+        ch = self.peek(pos)
+        if ch == "":
+            return self.syntaxError(pos, "expected a value")
+        if ch == '"':
+            text = self.readString(pos)
+            if text is Error:
+                return text
+            else:
+                return ParseResult(text[0], text[1])
+        if ch == "[" || ch == "{":
+            if depth >= 128:
+                return self.syntaxError(pos, "maximum nesting depth exceeded")
+            if ch == "[":
+                return self.readArray(pos, depth + 1)
+            return self.readObject(pos, depth + 1)
+        if ch == "n":
+            return self.readLiteral(pos, "null", nil)
+        if ch == "t":
+            return self.readLiteral(pos, "true", true)
+        if ch == "f":
+            return self.readLiteral(pos, "false", false)
+        if ch == "-" || isDigit(ch):
+            return self.readNumber(pos)
+        self.syntaxError(pos, "expected a value")
+
+    def readLiteral(pos: Int, literal: String, value: Nil | Bool): ParseResult | Error:
+        i = 0
+        for i < literal.Len():
+            if self.peek(pos + i) != literal[i]:
+                return self.syntaxError(pos + i, "expected " + literal)
+            i = i + 1
+        ParseResult(value, pos + i)
+
+    def readNumber(start: Int): ParseResult | Error:
+        pos = start
+        if self.peek(pos) == "-":
+            pos = pos + 1
+
+        if self.peek(pos) == "0":
+            pos = pos + 1
+            if isDigit(self.peek(pos)):
+                return self.syntaxError(pos, "leading zero in a number")
+        else:
+            if !isDigit(self.peek(pos)):
+                return self.syntaxError(pos, "expected a digit")
+            pos = self.readDigits(pos)
+
+        if self.peek(pos) == ".":
+            pos = pos + 1
+            if !isDigit(self.peek(pos)):
+                return self.syntaxError(pos, "expected a digit after the decimal point")
+            pos = self.readDigits(pos)
+
+        if self.peek(pos) == "e" || self.peek(pos) == "E":
+            pos = pos + 1
+            if self.peek(pos) == "+" || self.peek(pos) == "-":
+                pos = pos + 1
+            if !isDigit(self.peek(pos)):
+                return self.syntaxError(pos, "expected a digit in the exponent")
+            pos = self.readDigits(pos)
+
+        text = ""
+        i = start
+        for i < pos:
+            text = text + self.source[i]
+            i = i + 1
+        number = text.Float()
+        if number is Float:
+            return ParseResult(number, pos)
+        self.syntaxError(start, "number is outside the Float range")
+
+    def readDigits(start: Int): Int:
+        pos = start
+        for isDigit(self.peek(pos)):
+            pos = pos + 1
+        pos
+
+    def readString(start: Int): (String, Int) | Error:
+        pos = start + 1
+        text = ""
+        for pos < self.length:
+            ch = self.source[pos]
+            if ch == '"':
+                return (text, pos + 1)
+            if ch < " ":
+                return self.syntaxError(pos, "unescaped control character in string")
+            if ch == "\\":
+                escape = self.readEscape(pos)
+                if escape is Error:
+                    return escape
+                else:
+                    text = text + escape[0]
+                    pos = escape[1]
+            else:
+                text = text + ch
+                pos = pos + 1
+        self.syntaxError(pos, "unterminated string")
+
+    def readEscape(start: Int): (String, Int) | Error:
+        pos = start + 1
+        ch = self.peek(pos)
+        if ch == '"' || ch == "\\" || ch == "/":
+            return (ch, pos + 1)
+        if ch == "b":
+            return (8.Chr(), pos + 1)
+        if ch == "f":
+            return (12.Chr(), pos + 1)
+        if ch == "n":
+            return ("\n", pos + 1)
+        if ch == "r":
+            return ("\r", pos + 1)
+        if ch == "t":
+            return ("\t", pos + 1)
+        if ch == "u":
+            return self.readUnicode(pos + 1)
+        self.syntaxError(pos, "invalid string escape")
+
+    def readUnicode(start: Int): (String, Int) | Error:
+        code = self.readHex(start)
+        if code is Int:
+            next = start + 4
+            if code >= 0xd800 && code <= 0xdbff:
+                if self.peek(next) == "\\" && self.peek(next + 1) == "u":
+                    low = self.readHex(next + 2)
+                    if low is Int:
+                        if low >= 0xdc00 && low <= 0xdfff:
+                            rune = 0x10000 + (code - 0xd800) * 1024 + low - 0xdc00
+                            return (rune.Chr(), next + 6)
+                    else:
+                        return low
+                return ("�", next)
+            if code >= 0xdc00 && code <= 0xdfff:
+                return ("�", next)
+            return (code.Chr(), next)
+        else:
+            return code
+
+    def readHex(start: Int): Int | Error:
+        code = 0
+        i = 0
+        for i < 4:
+            digit = hexDigit(self.peek(start + i))
+            if digit < 0:
+                return self.syntaxError(start + i, "expected four hexadecimal digits")
+            code = code * 16 + digit
+            i = i + 1
+        code
+
+    def readArray(start: Int, depth: Int): ParseResult | Error:
+        values: Tuple = ()
+        pos = self.skipSpace(start + 1)
+        if self.peek(pos) == "]":
+            return ParseResult(values, pos + 1)
+        for:
+            item = self.readValue(pos, depth)
+            if item is ParseResult:
+                values = values.Append(item.value)
+                pos = self.skipSpace(item.next)
+            else:
+                return item
+            if self.peek(pos) == "]":
+                return ParseResult(values, pos + 1)
+            if self.peek(pos) != ",":
+                return self.syntaxError(pos, "expected ',' or ']'")
+            pos = pos + 1
+
+    def readObject(start: Int, depth: Int): ParseResult | Error:
+        values: Dict = {}
+        pos = self.skipSpace(start + 1)
+        if self.peek(pos) == "}":
+            return ParseResult(values, pos + 1)
+        for:
+            if self.peek(pos) != '"':
+                return self.syntaxError(pos, "expected a quoted object key")
+            name = self.readString(pos)
+            if name is Error:
+                return name
+            else:
+                pos = self.skipSpace(name[1])
+                if self.peek(pos) != ":":
+                    return self.syntaxError(pos, "expected ':' after the object key")
+                item = self.readValue(pos + 1, depth)
+                if item is ParseResult:
+                    values = values.Set(name[0], item.value)
+                    pos = self.skipSpace(item.next)
+                else:
+                    return item
+            if self.peek(pos) == "}":
+                return ParseResult(values, pos + 1)
+            if self.peek(pos) != ",":
+                return self.syntaxError(pos, "expected ',' or '}'")
+            pos = self.skipSpace(pos + 1)
+
+def isDigit(ch: String): Bool:
+    ch >= "0" && ch <= "9"
+
+def hexDigit(ch: String): Int:
+    if isDigit(ch):
+        return ch.Ord() - "0".Ord()
+    if ch >= "a" && ch <= "f":
+        return ch.Ord() - "a".Ord() + 10
+    if ch >= "A" && ch <= "F":
+        return ch.Ord() - "A".Ord() + 10
+    -1
