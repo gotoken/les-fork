@@ -1,0 +1,10 @@
+module json
+
+import json_decode
+import json_encode
+
+def Marshal(value): String | Error:
+    json_encode::Encoder().Encode(value)
+
+def Unmarshal(text: String): Nil | Bool | String | Float | Tuple | Dict | Error:
+    json_decode::Decoder(text, text.Len()).Decode()

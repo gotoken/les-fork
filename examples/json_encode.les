@@ -1,0 +1,98 @@
+module json_encode
+
+import json_errors
+
+struct Encoder:
+    def Encode(value): String | Error:
+        self.encodeValue(value, 0)
+
+    def encodeValue(value, depth: Int): String | Error:
+        if value is Nil:
+            return "null"
+        if value is Bool:
+            return value ? "true" : "false"
+        if value is String:
+            return quote(value)
+        if value is Int:
+            return value.String()
+        if value is Float:
+            if !value.IsFinite():
+                return json_errors::UnsupportedValueError(value.Inspect())
+            return value.Inspect()
+        if value is Tuple:
+            if depth >= 128:
+                return json_errors::UnsupportedValueError("maximum nesting depth exceeded")
+            return self.encodeArray(value, depth + 1)
+        if value is Dict:
+            if depth >= 128:
+                return json_errors::UnsupportedValueError("maximum nesting depth exceeded")
+            return self.encodeObject(value, depth + 1)
+        json_errors::UnsupportedTypeError(value.Type())
+
+    def encodeArray(values: Tuple, depth: Int): String | Error:
+        count = values.Len()
+        if count < 0:
+            return json_errors::UnsupportedValueError("infinite tuple")
+        text = "["
+        i = 0
+        for i < count:
+            item = self.encodeValue(values[i], depth)
+            if item is String:
+                if i > 0:
+                    text = text + ","
+                text = text + item
+            else:
+                return item
+            i = i + 1
+        text + "]"
+
+    def encodeObject(values: Dict, depth: Int): String | Error:
+        keys = values.Keys()
+        count = keys.Len()
+        text = "{"
+        i = 0
+        for i < count:
+            key = keys[i]
+            if key is String:
+                item = self.encodeValue(values[key], depth)
+                if item is String:
+                    if i > 0:
+                        text = text + ","
+                    text = text + quote(key) + ":" + item
+                else:
+                    return item
+            else:
+                return json_errors::UnsupportedTypeError("object key of type " + key.Type())
+            i = i + 1
+        text + "}"
+
+def quote(value: String): String:
+    text = '"'
+    i = 0
+    count = value.Len()
+    for i < count:
+        text = text + escape(value[i])
+        i = i + 1
+    text + '"'
+
+def escape(ch: String): String:
+    if ch == '"' || ch == "\\":
+        return "\\" + ch
+    if ch == 8.Chr():
+        return "\\b"
+    if ch == 12.Chr():
+        return "\\f"
+    if ch == "\n":
+        return "\\n"
+    if ch == "\r":
+        return "\\r"
+    if ch == "\t":
+        return "\\t"
+    code = ch.Ord()
+    if code < 0x20 || code == 0x2028 || code == 0x2029 || ch == "<" || ch == ">" || ch == "&":
+        return "\\u" + hex4(code)
+    ch
+
+def hex4(code: Int): String:
+    digits = "0123456789abcdef"
+    digits[code / 4096] + digits[code / 256 % 16] + digits[code / 16 % 16] + digits[code % 16]

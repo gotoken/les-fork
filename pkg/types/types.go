@@ -1027,6 +1027,12 @@ func LookupBuiltinTypeMethod(t Type, mName string) (*FuncType, bool) {
 			Ret:      TypeString,
 		}, true
 	}
+	if mName == "Float" && t == TypeString {
+		return &FuncType{
+			Arg: &TupleType{Elems: []Type{}},
+			Ret: NewUnionType(TypeFloat, BuiltinErrorIface),
+		}, true
+	}
 	if mName == "Float" && (t == TypeInt || t == TypeFloat) {
 		return &FuncType{
 			Arg: &TupleType{Elems: []Type{}},
@@ -1140,6 +1146,24 @@ func LookupBuiltinTypeMethod(t Type, mName string) (*FuncType, bool) {
 			return &FuncType{Arg: &TupleType{Elems: []Type{}}, Ret: TypeString}, true
 		case "Regex":
 			return &FuncType{Arg: &TupleType{Elems: []Type{}}, Ret: TypeRegex}, true
+		}
+	}
+
+	if dict, ok := t.(*DictType); ok {
+		switch mName {
+		case "Keys":
+			return &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: &TupleType{Elems: []Type{dict.Key}, IsVariadic: true},
+			}, true
+		case "Set":
+			key := &TypeParamType{Name: "K"}
+			value := &TypeParamType{Name: "V"}
+			return &FuncType{
+				TypeParams: []TypeParamDef{{Name: key.Name}, {Name: value.Name}},
+				Arg:        &TupleType{Elems: []Type{key, value}},
+				Ret:        &DictType{Key: NewUnionType(dict.Key, key), Value: NewUnionType(dict.Value, value)},
+			}, true
 		}
 	}
 

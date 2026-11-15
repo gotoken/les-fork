@@ -133,6 +133,7 @@ Primitive types provide predefined instance methods, indexing mechanisms, length
     "1010".Int(2)      # 10
     "-42abc".Int()     # -42
     ```
+  - `s.Float(): Float | Error`: Parses the entire string as a 64-bit float. It accepts decimal and hexadecimal floating-point notation, and the spellings for infinity and NaN accepted by Go's `strconv.ParseFloat`. Invalid syntax and overflow return an `Error`.
   - `s.Bytes(): Bytes`: Returns the UTF-8 byte sequence of `s` as an immutable `Bytes` value.
     ```python
     b = "hello".Bytes()  # Bytes with 5 bytes
@@ -250,6 +251,8 @@ Primitive types provide predefined instance methods, indexing mechanisms, length
   - `{...}` represents an arbitrary dictionary type of any key and value types.
 - **Methods**:
   - `d.Len(): Int`: Returns the number of key-value pairs in `d`.
+  - `d.Keys(): (Key, ...)`: Returns a finite tuple of the original key values, ordered by key type and then by the dictionary's representation of the key. String keys are ordered lexicographically. This method leaves dictionary values unevaluated.
+  - `d.Set(key, value): Dict`: Returns a new dictionary with the specified entry inserted or replaced. The receiver is immutable. Keys and values may have new types, and the supplied value remains lazy.
   - `d.Type(): String`: Returns the string representation of dict type (e.g., `"{String: Int}"`, `"{Unknown: Unknown}"`). Satisfies `interface Show`.
   - `d.Inspect(): String`: Returns the string representation of `d` (e.g., `{"a": 1}`). Satisfies `interface Show`.
 - **Key Access**:

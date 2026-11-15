@@ -276,57 +276,6 @@ func (ev *Evaluator) registerBuiltins() {
 		},
 	})
 
-	// Built-in Error constructor & default Error struct definition
-	errorMethodFuncType := &types.FuncType{
-		Arg: &types.TupleType{Elems: []types.Type{}},
-		Ret: types.TypeString,
-	}
-	errorStructDef := &StructDefValue{
-		Name:          "SimpleError",
-		FieldOrder:    []string{"message"},
-		FieldDefaults: make(map[string]ast.Expr),
-		EmbeddedNames: []string{},
-		Methods: map[string]*ast.FuncDef{
-			"Message": {
-				Name: "Message",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
-				},
-			},
-			"Inspect": {
-				Name: "Inspect",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{
-						Value: &ast.BinaryExpr{
-							Op:    "+",
-							Left:  &ast.StringLit{Value: "Error: "},
-							Right: &ast.Identifier{Name: "message"},
-						},
-					},
-				},
-			},
-			"Error": {
-				Name: "Error",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
-				},
-			},
-		},
-		Env: ev.builtinsEnv,
-		StructType: &types.StructType{
-			Name: "SimpleError",
-			Fields: map[string]types.Type{
-				"message": types.TypeString,
-			},
-			FieldOrder: []string{"message"},
-			Methods: map[string]*types.FuncType{
-				"Message": errorMethodFuncType,
-				"Inspect": errorMethodFuncType,
-				"Error":   errorMethodFuncType,
-			},
-		},
-	}
-
 	ev.builtinsEnv.Set("Error", &BuiltinFunc{
 		Name: "Error",
 		FuncType: &types.FuncType{
@@ -340,15 +289,7 @@ func (ev *Evaluator) registerBuiltins() {
 			if len(args) > 0 {
 				msg = Force(args[0]).String()
 			}
-			fields := map[string]Value{
-				"message": StringValue(msg),
-			}
-			inst := &StructInstance{
-				Def:      errorStructDef,
-				Fields:   fields,
-				Embedded: make(map[string]*StructInstance),
-			}
-			return inst, nil
+			return newSimpleError(msg), nil
 		},
 	})
 
@@ -3763,6 +3704,65 @@ func inspectString(s string) string {
 	return sb.String()
 }
 
+var simpleErrorDef = func() *StructDefValue {
+	errorMethodFuncType := &types.FuncType{
+		Arg: &types.TupleType{Elems: []types.Type{}},
+		Ret: types.TypeString,
+	}
+	return &StructDefValue{
+		Name:          "SimpleError",
+		FieldOrder:    []string{"message"},
+		FieldDefaults: make(map[string]ast.Expr),
+		EmbeddedNames: []string{},
+		Methods: map[string]*ast.FuncDef{
+			"Message": {
+				Name: "Message",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
+				},
+			},
+			"Inspect": {
+				Name: "Inspect",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{
+						Value: &ast.BinaryExpr{
+							Op:    "+",
+							Left:  &ast.StringLit{Value: "Error: "},
+							Right: &ast.Identifier{Name: "message"},
+						},
+					},
+				},
+			},
+			"Error": {
+				Name: "Error",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
+				},
+			},
+		},
+		StructType: &types.StructType{
+			Name: "SimpleError",
+			Fields: map[string]types.Type{
+				"message": types.TypeString,
+			},
+			FieldOrder: []string{"message"},
+			Methods: map[string]*types.FuncType{
+				"Message": errorMethodFuncType,
+				"Inspect": errorMethodFuncType,
+				"Error":   errorMethodFuncType,
+			},
+		},
+	}
+}()
+
+func newSimpleError(message string) *StructInstance {
+	return &StructInstance{
+		Def:      simpleErrorDef,
+		Fields:   map[string]Value{"message": StringValue(message)},
+		Embedded: make(map[string]*StructInstance),
+	}
+}
+
 func lookupBuiltinMember(val Value, member string) (Value, error) {
 	if member == "Inspect" {
 		return &BuiltinFunc{
@@ -4057,6 +4057,23 @@ func lookupBuiltinMember(val Value, member string) (Value, error) {
 		}
 	}
 	if member == "Float" {
+		if sv, ok := val.(StringValue); ok {
+			sig, _ := types.LookupBuiltinTypeMethod(types.TypeString, "Float")
+			return &BuiltinFunc{
+				Name:     "Float",
+				FuncType: sig,
+				Fn: func(args []Value) (Value, error) {
+					if len(args) != 0 {
+						return nil, fmt.Errorf("Float() takes 0 arguments, got %d", len(args))
+					}
+					number, err := strconv.ParseFloat(string(sv), 64)
+					if err != nil {
+						return newSimpleError(err.Error()), nil
+					}
+					return FloatValue(number), nil
+				},
+			}, nil
+		}
 		if iv, ok := val.(IntValue); ok {
 			bf := &BuiltinFunc{
 				Name: "Float",
@@ -4354,6 +4371,43 @@ func lookupBuiltinMember(val Value, member string) (Value, error) {
 	}
 	typeOfVal := func(v Value) types.Type {
 		return typeOfValWithDepth(v, 0)
+	}
+
+	if dict, ok := val.(*DictValue); ok {
+		switch member {
+		case "Keys":
+			sig, _ := types.LookupBuiltinTypeMethod(typeOfVal(dict), member)
+			return &BuiltinFunc{
+				Name:     member,
+				FuncType: sig,
+				Fn: func(args []Value) (Value, error) {
+					if len(args) != 0 {
+						return nil, fmt.Errorf("Keys() takes 0 arguments, got %d", len(args))
+					}
+					keys := make([]Value, 0, len(dict.Entries))
+					for _, key := range dict.sortedKeys() {
+						original, ok := dict.KeyValues[key]
+						if !ok {
+							return nil, fmt.Errorf("missing original dictionary key %s", key.Key)
+						}
+						keys = append(keys, original)
+					}
+					return &TupleValue{Elements: keys}, nil
+				},
+			}, nil
+		case "Set":
+			sig, _ := types.LookupBuiltinTypeMethod(typeOfVal(dict), member)
+			return &BuiltinFunc{
+				Name:     member,
+				FuncType: sig,
+				Fn: func(args []Value) (Value, error) {
+					if len(args) != 2 {
+						return nil, fmt.Errorf("Set() takes 2 arguments, got %d", len(args))
+					}
+					return dict.withEntry(Force(args[0]), args[1]), nil
+				},
+			}, nil
+		}
 	}
 
 	// Operator methods on built-in types
