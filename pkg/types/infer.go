@@ -2925,11 +2925,15 @@ func (inf *Inferencer) inferIndexCallee(e *ast.IndexExpr) (Type, bool, error) {
 	if !outerFound || !isGenericCalleeType(outerT) {
 		// A struct-typed field holds an instance, not a generic type constructor.
 		if _, isStructField := fieldT.(*StructType); isStructField {
+			isValueIndex := false
 			if idxId, isId := e.Index.(*ast.Identifier); isId {
-				if _, isVar := inf.scope.Lookup(idxId.Name); !isVar {
-					if _, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
-						return TypeUnknown, true, nil
-					}
+				if _, idxSc, bound := inf.scope.lookupWithScope(idxId.Name); bound && !idxSc.typeNames[idxId.Name] {
+					isValueIndex = true
+				}
+			}
+			if !isValueIndex {
+				if _, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
+					return TypeUnknown, true, nil
 				}
 			}
 		}

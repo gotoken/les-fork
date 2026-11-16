@@ -3579,6 +3579,48 @@ r = W(b: b).Go()`,
 			varName: "r",
 			want:    "Unknown",
 		},
+		{
+			name: "generic struct instance field does not type b[Box[Int]](...) as Box[Box[Int]]",
+			input: `struct Box[T]:
+    v: T
+b = Box[Int](v: 1)
+struct W:
+    b: Box[Int]
+    def Go():
+        b[Box[Int]](v: b)
+r = W(b: b).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "generic struct instance field does not type b[Foo](...) as Box[Foo]",
+			input: `struct Foo:
+    x: Int
+struct Box[T]:
+    v: T
+b = Box[Int](v: 1)
+struct W:
+    b: Box[Int]
+    def Go():
+        b[Foo](v: Foo(x: 1))
+r = W(b: b).Go()`,
+			varName: "r",
+			want:    "Unknown",
+		},
+		{
+			name: "indexable struct field still indexes via uppercase value variable Idx",
+			input: `struct MyArr:
+    def [](i: Int) -> () -> Int:
+        ||: i + 1
+struct W:
+    arr: MyArr
+    def Go() -> Int:
+        Idx = 1
+        arr[Idx]()
+r = W(arr: MyArr()).Go()`,
+			varName: "r",
+			want:    "Int",
+		},
 	}
 
 	for _, tt := range tests {
