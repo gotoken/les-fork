@@ -733,6 +733,7 @@ struct Point:
 
 #### Go-style Struct Embedding & Promotion
 - Structs can embed other structs anonymously by listing their type name in the struct body.
+- Inside a method, a bare field name refers to the field, but in a call a field whose type is not callable (including an embedded struct such as `Base` or `Box[Int]`) does not hide the outer function, generic function, builtin, or struct constructor of the same name: `Base(...)` and `Box[Int](...)` still construct `Base` and `Box[Int]`. Use `@Base` or bare `Base` without a call for the embedded field value.
 - Embedded fields and methods are automatically promoted to the outer struct.
 - An embedded type also participates in subtyping: an outer instance satisfies `is Inner`.
 - The type checker also accepts an outer struct value where an embedded struct type (direct or transitive) is expected, provided that every member of the embedded type that the outer struct shadows has a compatible type and none is ambiguous on the outer struct. The value is not converted, so member access still finds the outer struct's members first.

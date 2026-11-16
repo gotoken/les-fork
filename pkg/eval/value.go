@@ -888,6 +888,7 @@ func (si *StructInstance) stringWithVisited(visited map[any]bool, depth int) str
 
 func (si *StructInstance) bindMethod(m *ast.FuncDef) *Closure {
 	methodEnv := NewEnvironment(si.Def.Env)
+	methodEnv.isFieldScope = true
 	methodEnv.Set("self", si)
 	if len(si.Def.TypeParams) > 0 {
 		if len(si.TypeArgs) == 0 {
@@ -1368,6 +1369,8 @@ type Environment struct {
 	ActiveLoopID       uint64                                  // 0 means not inside a loop
 	Filename           string                                  // source file name for error reporting
 	typeArgs           map[string]string                       // type parameters introduced by this scope -> runtime type arguments
+	isFieldScope       bool                                    // holds the fields of a struct instance for its methods (see calleeBeyondFields)
+	fieldScopes        map[string]*Environment                 // for captured field snapshots: maps field name to its originating field scope
 }
 
 func NewEnvironment(parent *Environment) *Environment {
@@ -1457,6 +1460,114 @@ func (env *Environment) Get(name string) (Value, bool) {
 	}
 	if env.parent != nil {
 		return env.parent.Get(name)
+	}
+	return nil, false
+}
+
+// getWithScope is like Get and also returns the scope holding the binding.
+func (env *Environment) getWithScope(name string) (Value, *Environment, bool) {
+	for cur := env; cur != nil; cur = cur.parent {
+		if v, ok := cur.store[name]; ok {
+			return v, cur, true
+		}
+	}
+	return nil, nil, false
+}
+
+func isCallableRuntimeValue(v Value) bool {
+	switch v.(type) {
+	case *BuiltinFunc, *Closure, *StructDefValue:
+		return true
+	default:
+		return false
+	}
+}
+
+func isStaticallyCallableType(t types.Type) bool {
+	if t == nil || t == types.TypeUnknown {
+		return true
+	}
+	switch v := t.(type) {
+	case *types.FuncType:
+		return true
+	case *types.UnionType:
+		for _, m := range v.Members {
+			if isStaticallyCallableType(m) {
+				return true
+			}
+		}
+		return false
+	case *types.TypeParamType:
+		if v.Constraint != nil {
+			return isStaticallyCallableType(v.Constraint)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func fieldDeclaredType(scope *Environment, name string) (types.Type, bool) {
+	if scope == nil {
+		return nil, false
+	}
+	if scope.fieldScopes != nil {
+		if orig, ok := scope.fieldScopes[name]; ok {
+			scope = orig
+		}
+	}
+	selfVal, ok := scope.Get("self")
+	if !ok || selfVal == nil {
+		return nil, false
+	}
+	if ev, evaluated := PeekEvaluated(selfVal); evaluated {
+		selfVal = ev
+	}
+	si, ok := selfVal.(*StructInstance)
+	if !ok || si.Def == nil || si.Def.StructType == nil {
+		return nil, false
+	}
+	st, ok := si.Def.StructType.(*types.StructType)
+	if !ok {
+		return nil, false
+	}
+	t, err := st.LookupMember(name)
+	if err != nil {
+		return nil, false
+	}
+	return t, true
+}
+
+// calleeBeyondFields resolves a call target beyond receiver field scopes,
+// returning the first callable binding or stopping when a non-field binding is
+// not callable. Static field types are inspected before forcing thunks so
+// unused non-callable fields remain lazy.
+func (env *Environment) calleeBeyondFields(name string) (Value, bool) {
+	for cur := env; cur != nil; cur = cur.parent {
+		v, ok := cur.store[name]
+		if !ok {
+			continue
+		}
+		if !cur.isFieldScope {
+			fv := Force(v)
+			if isCallableRuntimeValue(fv) {
+				return fv, true
+			}
+			return nil, false
+		}
+		if ev, evaluated := PeekEvaluated(v); evaluated {
+			if isCallableRuntimeValue(ev) {
+				return ev, true
+			}
+			continue
+		}
+		if ft, hasType := fieldDeclaredType(cur, name); hasType && !isStaticallyCallableType(ft) {
+			continue
+		}
+		fv := Force(v)
+		if isCallableRuntimeValue(fv) {
+			return fv, true
+		}
 	}
 	return nil, false
 }

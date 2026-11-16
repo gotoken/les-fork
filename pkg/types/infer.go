@@ -340,9 +340,12 @@ func extractTupleBindingTypes(t Type, numElements int, hasRest bool) ([]Type, Ty
 
 // Scope tracks lexical bindings and detects duplicate declarations in the same scope.
 type Scope struct {
-	parent   *Scope
-	bindings map[string]Type
-	declared map[string]bool // declarations made specifically in this lexical scope
+	parent       *Scope
+	bindings     map[string]Type
+	declared     map[string]bool // declarations made specifically in this lexical scope
+	typeNames    map[string]bool // bindings that declare a named type or type parameter
+	fieldNames   map[string]bool // narrowed bindings that originated from a non-callable receiver field
+	isFieldScope bool            // holds receiver fields for struct methods
 }
 
 func NewScope(parent *Scope) *Scope {
@@ -351,6 +354,57 @@ func NewScope(parent *Scope) *Scope {
 		bindings: make(map[string]Type),
 		declared: make(map[string]bool),
 	}
+}
+
+func (s *Scope) DeclareType(name string, t Type) error {
+	if err := s.Declare(name, t); err != nil {
+		return err
+	}
+	if s.typeNames == nil {
+		s.typeNames = make(map[string]bool)
+	}
+	s.typeNames[name] = true
+	return nil
+}
+
+func (s *Scope) DeclareField(name string, t Type) error {
+	if err := s.Declare(name, t); err != nil {
+		return err
+	}
+	if s.fieldNames == nil {
+		s.fieldNames = make(map[string]bool)
+	}
+	s.fieldNames[name] = true
+	return nil
+}
+
+func (s *Scope) isFieldBinding(name string) bool {
+	return s != nil && (s.isFieldScope || s.fieldNames[name])
+}
+
+func (s *Scope) declareNarrowed(src *Scope, name string, t Type) {
+	if src != nil {
+		if origT, origSc, ok := src.lookupWithScope(name); ok && origSc.isFieldBinding(name) && !isCallableFieldType(origT) {
+			_ = s.DeclareField(name, t)
+			return
+		}
+	}
+	_ = s.Declare(name, t)
+}
+
+func (s *Scope) LookupType(name string) (Type, bool) {
+	for cur := s; cur != nil; cur = cur.parent {
+		if cur.isFieldBinding(name) {
+			continue
+		}
+		if t, ok := cur.bindings[name]; ok {
+			if cur.typeNames[name] {
+				return t, true
+			}
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 func (s *Scope) Declare(name string, t Type) error {
@@ -377,17 +431,51 @@ func (s *Scope) Lookup(name string) (Type, bool) {
 	return nil, false
 }
 
+func (s *Scope) lookupWithScope(name string) (Type, *Scope, bool) {
+	for cur := s; cur != nil; cur = cur.parent {
+		if t, ok := cur.bindings[name]; ok {
+			return t, cur, true
+		}
+	}
+	return nil, nil, false
+}
+
+func (s *Scope) lookupBeyondFieldsWithScope(name string) (Type, *Scope, bool) {
+	for cur := s; cur != nil; cur = cur.parent {
+		if cur.isFieldBinding(name) {
+			continue
+		}
+		if t, ok := cur.bindings[name]; ok {
+			return t, cur, true
+		}
+	}
+	return nil, nil, false
+}
+
 func (s *Scope) Clone() *Scope {
 	c := &Scope{
-		parent:   s.parent,
-		bindings: make(map[string]Type, len(s.bindings)),
-		declared: make(map[string]bool, len(s.declared)),
+		parent:       s.parent,
+		bindings:     make(map[string]Type, len(s.bindings)),
+		declared:     make(map[string]bool, len(s.declared)),
+		isFieldScope: s.isFieldScope,
 	}
 	for k, v := range s.bindings {
 		c.bindings[k] = v
 	}
 	for k, v := range s.declared {
 		c.declared[k] = v
+	}
+	if len(s.typeNames) > 0 {
+		c.typeNames = make(map[string]bool, len(s.typeNames))
+		for k, v := range s.typeNames {
+			c.typeNames[k] = v
+		}
+	}
+	if len(s.fieldNames) > 0 {
+		c.fieldNames = make(map[string]bool, len(s.fieldNames))
+		for k, v := range s.fieldNames {
+			c.fieldNames[k] = v
+		}
 	}
 	return c
 }
@@ -431,6 +519,12 @@ type Inferencer struct {
 	// functions written without explicit type arguments, keyed by the
 	// *ast.CallExpr, in type parameter order.
 	CallTypeArgs map[ast.Expr][]Type
+	// SkipFieldScope marks bare callee identifiers that resolve past
+	// receiver field scopes to an outer function or struct definition.
+	SkipFieldScope map[ast.Expr]bool
+	// TypeAppExprs marks IndexExpr callees that represent explicit generic
+	// type application rather than value indexing.
+	TypeAppExprs map[*ast.IndexExpr]bool
 	filename     string
 	warnUnknown  bool
 	warnings     []TypeWarning
@@ -630,18 +724,18 @@ func NewInferencer() *Inferencer {
 	rootScope := NewScope(nil)
 
 	// Built-in Error interface: Message(): String, Inspect(): String
-	_ = rootScope.Declare("Error", BuiltinErrorIface)
+	_ = rootScope.DeclareType("Error", BuiltinErrorIface)
 
 	// Built-in Show interface: Inspect(): String, Type(): String
-	_ = rootScope.Declare("Show", BuiltinShowIface)
+	_ = rootScope.DeclareType("Show", BuiltinShowIface)
 
 	// Built-in Equatable, Comparable & Numeric interfaces
-	_ = rootScope.Declare("Equatable", BuiltinEquatableIface)
-	_ = rootScope.Declare("Comparable", BuiltinComparableIface)
-	_ = rootScope.Declare("Numeric", BuiltinNumericIface)
+	_ = rootScope.DeclareType("Equatable", BuiltinEquatableIface)
+	_ = rootScope.DeclareType("Comparable", BuiltinComparableIface)
+	_ = rootScope.DeclareType("Numeric", BuiltinNumericIface)
 
 	// Built-in Indexable interface
-	_ = rootScope.Declare("Indexable", BuiltinIndexableIface)
+	_ = rootScope.DeclareType("Indexable", BuiltinIndexableIface)
 
 	// Built-in print: (*args: Show) -> ()
 	_ = rootScope.Declare("print", BuiltinPrintFuncType)
@@ -723,9 +817,11 @@ func NewInferencer() *Inferencer {
 		nextVarID:    0,
 		scope:        fileScope,
 		modules:      make(map[string]*ModuleType),
-		ExprTypes:    make(map[ast.Expr]Type),
-		StmtTypes:    make(map[ast.Stmt]Type),
-		CallTypeArgs: make(map[ast.Expr][]Type),
+		ExprTypes:      make(map[ast.Expr]Type),
+		StmtTypes:      make(map[ast.Stmt]Type),
+		CallTypeArgs:   make(map[ast.Expr][]Type),
+		SkipFieldScope: make(map[ast.Expr]bool),
+		TypeAppExprs:   make(map[*ast.IndexExpr]bool),
 		warnUnknown:  true,
 	}
 	inf.modules["io"] = makeIOModuleType("io")
@@ -1015,13 +1111,13 @@ func (inf *Inferencer) setupIfScopes(cond ast.Expr) (thenScope, elseScope *Scope
 				if id, ok := bin.Left.(*ast.Identifier); ok {
 					if _, isNil := bin.Right.(*ast.NilLit); isNil {
 						if origT, ok := inf.scope.Lookup(id.Name); ok {
-							_ = thenScope.Declare(id.Name, removeNilFromType(origT))
+							thenScope.declareNarrowed(inf.scope, id.Name, removeNilFromType(origT))
 						}
 					}
 				} else if id, ok := bin.Right.(*ast.Identifier); ok {
 					if _, isNil := bin.Left.(*ast.NilLit); isNil {
 						if origT, ok := inf.scope.Lookup(id.Name); ok {
-							_ = thenScope.Declare(id.Name, removeNilFromType(origT))
+							thenScope.declareNarrowed(inf.scope, id.Name, removeNilFromType(origT))
 						}
 					}
 				}
@@ -1029,13 +1125,13 @@ func (inf *Inferencer) setupIfScopes(cond ast.Expr) (thenScope, elseScope *Scope
 				if id, ok := bin.Left.(*ast.Identifier); ok {
 					if _, isNil := bin.Right.(*ast.NilLit); isNil {
 						if origT, ok := inf.scope.Lookup(id.Name); ok {
-							_ = elseScope.Declare(id.Name, removeNilFromType(origT))
+							elseScope.declareNarrowed(inf.scope, id.Name, removeNilFromType(origT))
 						}
 					}
 				} else if id, ok := bin.Right.(*ast.Identifier); ok {
 					if _, isNil := bin.Left.(*ast.NilLit); isNil {
 						if origT, ok := inf.scope.Lookup(id.Name); ok {
-							_ = elseScope.Declare(id.Name, removeNilFromType(origT))
+							elseScope.declareNarrowed(inf.scope, id.Name, removeNilFromType(origT))
 						}
 					}
 				}
@@ -1044,10 +1140,10 @@ func (inf *Inferencer) setupIfScopes(cond ast.Expr) (thenScope, elseScope *Scope
 			if id, ok := isExpr.Expr.(*ast.Identifier); ok {
 				if narrowT, coveredT, err := inf.parsePatternTypeAnnot(isExpr.TypeAnnot); err == nil {
 					origT, found := inf.scope.Lookup(id.Name)
-					_ = thenScope.Declare(id.Name, narrowTypeByPattern(origT, narrowT))
+					thenScope.declareNarrowed(inf.scope, id.Name, narrowTypeByPattern(origT, narrowT))
 					if found {
 						if elseT := removeCoveredMembers(origT, coveredT); elseT != origT {
-							_ = elseScope.Declare(id.Name, elseT)
+							elseScope.declareNarrowed(inf.scope, id.Name, elseT)
 						}
 					}
 				}
@@ -1461,7 +1557,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			for i, tp := range s.TypeParams {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
-				_ = tpScope.Declare(tp.Name, tpType)
+				_ = tpScope.DeclareType(tp.Name, tpType)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -1777,7 +1873,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			for i, tp := range s.TypeParams {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
-				_ = tpScope.Declare(tp.Name, tpType)
+				_ = tpScope.DeclareType(tp.Name, tpType)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -1810,7 +1906,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if origScope != nil {
 			declScope = origScope
 		}
-		if err := declScope.Declare(s.Name, st); err != nil {
+		if err := declScope.DeclareType(s.Name, st); err != nil {
 			if origScope != nil {
 				inf.scope = origScope
 			}
@@ -1885,11 +1981,13 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		var methodItems []*methodWorkItem
 
 		for _, m := range s.Methods {
-			methodScope := NewScope(inf.scope)
-			_ = methodScope.Declare("self", st)
+			fieldScope := NewScope(inf.scope)
+			fieldScope.isFieldScope = true
+			_ = fieldScope.Declare("self", st)
 			for fName, fType := range st.Fields {
-				_ = methodScope.Declare(fName, fType)
+				_ = fieldScope.Declare(fName, fType)
 			}
+			methodScope := NewScope(fieldScope)
 
 			var mTypeParams []TypeParamDef
 			prevInfScope := inf.scope
@@ -1898,7 +1996,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				tpTypes := make([]*TypeParamType, len(m.TypeParams))
 				for i, tp := range m.TypeParams {
 					tpTypes[i] = &TypeParamType{Name: tp.Name}
-					_ = mScope.Declare(tp.Name, tpTypes[i])
+					_ = mScope.DeclareType(tp.Name, tpTypes[i])
 				}
 				inf.scope = mScope
 				mTypeParams = make([]TypeParamDef, len(m.TypeParams))
@@ -2191,7 +2289,6 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			} else if checkDeclaredRet != nil && checkDeclaredRet.Equals(st) {
 				checkDeclaredRet = passBSelfType
 			}
-			_ = item.methodScope.Declare("self", passBSelfType)
 			if m.Name == "init" {
 				checkDeclaredRet = TypeUnknown
 			}
@@ -2335,7 +2432,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			for i, tp := range s.TypeParams {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
-				_ = tpScope.Declare(tp.Name, tpType)
+				_ = tpScope.DeclareType(tp.Name, tpType)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -2406,7 +2503,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if origScope != nil {
 			declScope = origScope
 		}
-		if err := declScope.Declare(s.Name, iface); err != nil {
+		if err := declScope.DeclareType(s.Name, iface); err != nil {
 			if origScope != nil {
 				inf.scope = origScope
 			}
@@ -2422,7 +2519,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				tpTypes := make([]*TypeParamType, len(m.TypeParams))
 				for i, tp := range m.TypeParams {
 					tpTypes[i] = &TypeParamType{Name: tp.Name}
-					_ = mScope.Declare(tp.Name, tpTypes[i])
+					_ = mScope.DeclareType(tp.Name, tpTypes[i])
 				}
 				inf.scope = mScope
 				mTypeParams = make([]TypeParamDef, len(m.TypeParams))
@@ -2648,6 +2745,258 @@ func (inf *Inferencer) inferExpr(expr ast.Expr) (Type, error) {
 		inf.ExprTypes[expr] = t
 	}
 	return t, err
+}
+
+func isCallableFieldType(t Type) bool {
+	if t == nil || t == TypeUnknown {
+		return true
+	}
+	switch v := t.(type) {
+	case *FuncType:
+		return true
+	case *UnionType:
+		for _, m := range v.Members {
+			if isCallableFieldType(m) {
+				return true
+			}
+		}
+		return false
+	case *TypeParamType:
+		if v.Constraint != nil {
+			return isCallableFieldType(v.Constraint)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func isGenericCalleeType(t Type) bool {
+	switch v := t.(type) {
+	case *StructType:
+		origin := v
+		if origin.GenericOrigin != nil {
+			origin = origin.GenericOrigin
+		}
+		return len(origin.TypeParams) > 0
+	case *FuncType:
+		return len(v.TypeParams) > 0 && len(v.TypeArgs) == 0
+	case *InterfaceType:
+		origin := v
+		if origin.GenericOrigin != nil {
+			origin = origin.GenericOrigin
+		}
+		return len(origin.TypeParams) > 0
+	default:
+		return false
+	}
+}
+
+func (inf *Inferencer) instantiateExplicitTypeArgs(e ast.Expr, targetT Type, args []Type, requireTypeParams bool) (Type, bool, error) {
+	if st, ok := targetT.(*StructType); ok {
+		origin := st
+		if origin.GenericOrigin != nil {
+			origin = origin.GenericOrigin
+		}
+		if !requireTypeParams || len(origin.TypeParams) > 0 {
+			if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
+				return nil, false, inf.nodeErr(e, "%s", err.Error())
+			}
+			return InstantiateStruct(origin, args), true, nil
+		}
+	}
+	if fnT, ok := targetT.(*FuncType); ok {
+		if !requireTypeParams || (len(fnT.TypeParams) > 0 && len(fnT.TypeArgs) == 0) {
+			if err := ValidateTypeConstraints(fnT.TypeParams, args); err != nil {
+				return nil, false, inf.nodeErr(e, "%s", err.Error())
+			}
+			bindings := make(map[string]Type)
+			fullArgs := make([]Type, len(fnT.TypeParams))
+			for i, tp := range fnT.TypeParams {
+				if i < len(args) {
+					fullArgs[i] = args[i]
+				} else if tp.Default != nil {
+					fullArgs[i] = Substitute(tp.Default, bindings)
+				} else {
+					fullArgs[i] = TypeUnknown
+				}
+				bindings[tp.Name] = fullArgs[i]
+			}
+			instFn := Substitute(fnT, bindings).(*FuncType)
+			instFn.TypeParams = nil
+			instFn.TypeArgs = fullArgs
+			return instFn, true, nil
+		}
+	}
+	if iface, ok := targetT.(*InterfaceType); ok {
+		origin := iface
+		if origin.GenericOrigin != nil {
+			origin = origin.GenericOrigin
+		}
+		if !requireTypeParams || len(origin.TypeParams) > 0 {
+			if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
+				return nil, false, inf.nodeErr(e, "%s", err.Error())
+			}
+			return InstantiateInterface(origin, args), true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// inferCallee resolves the callee of a CallExpr. A receiver field whose static
+// type is non-callable does not shadow an outer function, generic function, or
+// struct definition of the same name, including explicit type applications.
+func (inf *Inferencer) inferCallee(callee ast.Expr) (Type, error) {
+	switch e := callee.(type) {
+	case *ast.Identifier:
+		t, err := inf.inferIdentCallee(e)
+		if err == nil && t != nil && inf.ExprTypes != nil {
+			inf.ExprTypes[e] = t
+		}
+		return t, err
+	case *ast.IndexExpr:
+		if t, ok, err := inf.inferIndexCallee(e); err != nil {
+			return nil, err
+		} else if ok {
+			if inf.ExprTypes != nil {
+				inf.ExprTypes[e] = t
+			}
+			return t, nil
+		}
+	case *ast.TypeInstExpr:
+		if t, ok, err := inf.inferTypeInstCallee(e); err != nil {
+			return nil, err
+		} else if ok {
+			if inf.ExprTypes != nil {
+				inf.ExprTypes[e] = t
+			}
+			return t, nil
+		}
+	}
+	return inf.inferExpr(callee)
+}
+
+// lookupOuterCallable looks up a callee beyond field scopes, rejecting struct
+// instance variables (which hold values rather than type constructors).
+func lookupOuterCallable(sc *Scope, name string) (Type, bool) {
+	outerT, outerSc, found := sc.parent.lookupBeyondFieldsWithScope(name)
+	if !found {
+		return nil, false
+	}
+	// A variable holding a struct instance (not a named struct type) is
+	// not a constructor; do not type-check calls or instantiations on it as outerT.
+	if _, isStructVal := outerT.(*StructType); isStructVal && !outerSc.typeNames[name] {
+		return nil, false
+	}
+	return outerT, true
+}
+
+func (inf *Inferencer) inferIdentCallee(id *ast.Identifier) (Type, error) {
+	t, sc, ok := inf.scope.lookupWithScope(id.Name)
+	if !ok {
+		return TypeUnknown, nil
+	}
+	if sc.isFieldBinding(id.Name) && !isCallableFieldType(t) {
+		if outerT, found := lookupOuterCallable(sc, id.Name); found {
+			if inf.SkipFieldScope != nil {
+				inf.SkipFieldScope[id] = true
+			}
+			return outerT, nil
+		}
+		// A struct-typed field (e.g. named field `b: Base`) holds an instance,
+		// not a constructor; do not type-check `b(...)` as constructing `Base`.
+		if _, isStructField := t.(*StructType); isStructField {
+			return TypeUnknown, nil
+		}
+	}
+	return t, nil
+}
+
+func (inf *Inferencer) inferIndexCallee(e *ast.IndexExpr) (Type, bool, error) {
+	targetId, ok := e.Target.(*ast.Identifier)
+	if !ok || e.TypeArg == "" {
+		return nil, false, nil
+	}
+	fieldT, sc, found := inf.scope.lookupWithScope(targetId.Name)
+	if !found || !sc.isFieldBinding(targetId.Name) || isCallableFieldType(fieldT) {
+		return nil, false, nil
+	}
+	outerT, outerFound := lookupOuterCallable(sc, targetId.Name)
+	if !outerFound || !isGenericCalleeType(outerT) {
+		// A struct-typed field holds an instance, not a generic type constructor.
+		if _, isStructField := fieldT.(*StructType); isStructField {
+			isValueIndex := false
+			if idxId, isId := e.Index.(*ast.Identifier); isId {
+				if _, idxSc, bound := inf.scope.lookupWithScope(idxId.Name); bound && !idxSc.typeNames[idxId.Name] {
+					isValueIndex = true
+				}
+			}
+			if !isValueIndex {
+				if _, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
+					return TypeUnknown, true, nil
+				}
+			}
+		}
+		return nil, false, nil
+	}
+	argT, err := inf.parseTypeAnnot(e.TypeArg)
+	if err != nil {
+		return nil, false, nil
+	}
+	instT, handled, err := inf.instantiateExplicitTypeArgs(e, outerT, []Type{argT}, true)
+	if err != nil || !handled {
+		return nil, false, err
+	}
+	if inf.SkipFieldScope != nil {
+		inf.SkipFieldScope[targetId] = true
+	}
+	if inf.TypeAppExprs != nil {
+		inf.TypeAppExprs[e] = true
+	}
+	if inf.ExprTypes != nil {
+		inf.ExprTypes[targetId] = outerT
+	}
+	return instT, true, nil
+}
+
+func (inf *Inferencer) inferTypeInstCallee(e *ast.TypeInstExpr) (Type, bool, error) {
+	targetId, ok := e.Target.(*ast.Identifier)
+	if !ok {
+		return nil, false, nil
+	}
+	fieldT, sc, found := inf.scope.lookupWithScope(targetId.Name)
+	if !found || !sc.isFieldBinding(targetId.Name) || isCallableFieldType(fieldT) {
+		return nil, false, nil
+	}
+	outerT, outerFound := lookupOuterCallable(sc, targetId.Name)
+	if !outerFound {
+		if _, isStructField := fieldT.(*StructType); isStructField {
+			return nil, false, inf.nodeErr(e, "cannot instantiate type arguments on %s", fieldT.String())
+		}
+		return nil, false, nil
+	}
+	args := make([]Type, len(e.TypeArgs))
+	for i, aStr := range e.TypeArgs {
+		t, err := inf.parseTypeAnnot(aStr)
+		if err != nil {
+			return nil, false, err
+		}
+		args[i] = t
+	}
+	instT, handled, err := inf.instantiateExplicitTypeArgs(e, outerT, args, false)
+	if err != nil {
+		return nil, false, err
+	}
+	if !handled {
+		return nil, false, inf.nodeErr(e, "cannot instantiate type arguments on %s", outerT.String())
+	}
+	if inf.SkipFieldScope != nil {
+		inf.SkipFieldScope[targetId] = true
+	}
+	if inf.ExprTypes != nil {
+		inf.ExprTypes[targetId] = outerT
+	}
+	return instT, true, nil
 }
 
 // appendToTuple adds addedElems to base tuple type, taking variadic tail into account.
@@ -3259,7 +3608,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				}
 			}
 		}
-		calleeT, err := inf.inferExpr(e.Callee)
+		calleeT, err := inf.inferCallee(e.Callee)
 		if err != nil {
 			return nil, err
 		}
@@ -3796,46 +4145,10 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 			}
 			args[i] = t
 		}
-		if st, ok := targetT.(*StructType); ok {
-			origin := st
-			if origin.GenericOrigin != nil {
-				origin = origin.GenericOrigin
-			}
-			if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
-				return nil, inf.nodeErr(e, "%s", err.Error())
-			}
-			return InstantiateStruct(origin, args), nil
-		}
-		if fnT, ok := targetT.(*FuncType); ok {
-			if err := ValidateTypeConstraints(fnT.TypeParams, args); err != nil {
-				return nil, inf.nodeErr(e, "%s", err.Error())
-			}
-			bindings := make(map[string]Type)
-			fullArgs := make([]Type, len(fnT.TypeParams))
-			for i, tp := range fnT.TypeParams {
-				if i < len(args) {
-					fullArgs[i] = args[i]
-				} else if tp.Default != nil {
-					fullArgs[i] = Substitute(tp.Default, bindings)
-				} else {
-					fullArgs[i] = TypeUnknown
-				}
-				bindings[tp.Name] = fullArgs[i]
-			}
-			instFn := Substitute(fnT, bindings).(*FuncType)
-			instFn.TypeParams = nil
-			instFn.TypeArgs = fullArgs
-			return instFn, nil
-		}
-		if iface, ok := targetT.(*InterfaceType); ok {
-			origin := iface
-			if origin.GenericOrigin != nil {
-				origin = origin.GenericOrigin
-			}
-			if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
-				return nil, inf.nodeErr(e, "%s", err.Error())
-			}
-			return InstantiateInterface(origin, args), nil
+		if resT, handled, err := inf.instantiateExplicitTypeArgs(e, targetT, args, false); err != nil {
+			return nil, err
+		} else if handled {
+			return resT, nil
 		}
 		return nil, inf.nodeErr(e, "cannot instantiate type arguments on %s", targetT.String())
 
@@ -3844,59 +4157,12 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		if e.TypeArg != "" {
-			if st, ok := targetT.(*StructType); ok {
-				origin := st
-				if origin.GenericOrigin != nil {
-					origin = origin.GenericOrigin
-				}
-				if len(origin.TypeParams) > 0 {
-					if argT, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
-						args := []Type{argT}
-						if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
-							return nil, inf.nodeErr(e, "%s", err.Error())
-						}
-						return InstantiateStruct(origin, args), nil
-					}
-				}
-			}
-			if fnT, ok := targetT.(*FuncType); ok && len(fnT.TypeParams) > 0 && len(fnT.TypeArgs) == 0 {
-				if argT, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
-					args := []Type{argT}
-					if err := ValidateTypeConstraints(fnT.TypeParams, args); err != nil {
-						return nil, inf.nodeErr(e, "%s", err.Error())
-					}
-					bindings := make(map[string]Type)
-					fullArgs := make([]Type, len(fnT.TypeParams))
-					for i, tp := range fnT.TypeParams {
-						if i < len(args) {
-							fullArgs[i] = args[i]
-						} else if tp.Default != nil {
-							fullArgs[i] = Substitute(tp.Default, bindings)
-						} else {
-							fullArgs[i] = TypeUnknown
-						}
-						bindings[tp.Name] = fullArgs[i]
-					}
-					instFn := Substitute(fnT, bindings).(*FuncType)
-					instFn.TypeParams = nil
-					instFn.TypeArgs = fullArgs
-					return instFn, nil
-				}
-			}
-			if iface, ok := targetT.(*InterfaceType); ok {
-				origin := iface
-				if origin.GenericOrigin != nil {
-					origin = origin.GenericOrigin
-				}
-				if len(origin.TypeParams) > 0 {
-					if argT, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
-						args := []Type{argT}
-						if err := ValidateTypeConstraints(origin.TypeParams, args); err != nil {
-							return nil, inf.nodeErr(e, "%s", err.Error())
-						}
-						return InstantiateInterface(origin, args), nil
-					}
+		if e.TypeArg != "" && isGenericCalleeType(targetT) {
+			if argT, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
+				if resT, handled, err := inf.instantiateExplicitTypeArgs(e, targetT, []Type{argT}, true); err != nil {
+					return nil, err
+				} else if handled {
+					return resT, nil
 				}
 			}
 		}
@@ -4095,7 +4361,7 @@ func ParseTypeAnnot(annot string) (Type, error) {
 func ParseTypeAnnotWithParams(annot string, typeParams []ast.TypeParam, selfType ...Type) (Type, error) {
 	inf := &Inferencer{scope: NewScope(nil)}
 	for _, tp := range typeParams {
-		_ = inf.scope.Declare(tp.Name, &TypeParamType{Name: tp.Name})
+		_ = inf.scope.DeclareType(tp.Name, &TypeParamType{Name: tp.Name})
 	}
 	if len(selfType) > 0 && selfType[0] != nil {
 		inf.selfType = selfType[0]
@@ -4116,7 +4382,7 @@ func ParseTypeAnnotWithEnv(annot string, baseInf *Inferencer, extraTypes map[str
 		modules: modules,
 	}
 	for name, typ := range extraTypes {
-		_ = inf.scope.Declare(name, typ)
+		_ = inf.scope.DeclareType(name, typ)
 	}
 	if len(selfType) > 0 && selfType[0] != nil {
 		inf.selfType = selfType[0]
@@ -4536,7 +4802,7 @@ func (inf *Inferencer) parseTypeAnnot(annot string) (Type, error) {
 		}
 	}
 	if inf != nil && inf.scope != nil {
-		if t, ok := inf.scope.Lookup(annot); ok {
+		if t, ok := inf.scope.LookupType(annot); ok {
 			return maybeInstantiateDefaultType(t), nil
 		}
 	}
@@ -5070,7 +5336,7 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 			}
 			narrowedTargetT := narrowTypeByPattern(targetT, TypeString)
 			if id, isId := e.Target.(*ast.Identifier); isId {
-				_ = caseScope.Declare(id.Name, narrowedTargetT)
+				caseScope.declareNarrowed(inf.scope, id.Name, narrowedTargetT)
 			}
 			if c.AsName != "" && c.AsName != "_" {
 				_ = caseScope.Declare(c.AsName, TypeMatch)
@@ -5090,7 +5356,7 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 
 			narrowedTupleT := narrowTypeByPattern(targetT, tupleCovered)
 			if id, isId := e.Target.(*ast.Identifier); isId {
-				_ = caseScope.Declare(id.Name, narrowedTupleT)
+				caseScope.declareNarrowed(inf.scope, id.Name, narrowedTupleT)
 			}
 
 			elemTypes, restType, _ := extractTupleBindingTypes(narrowedTupleT, len(c.TuplePattern.Elements), c.TuplePattern.RestName != "")
@@ -5146,7 +5412,7 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 			} else if pat == "true" || pat == "false" {
 				narrowedTargetT := narrowTypeByPattern(targetT, TypeBool)
 				if id, isId := e.Target.(*ast.Identifier); isId {
-					_ = caseScope.Declare(id.Name, narrowedTargetT)
+					caseScope.declareNarrowed(inf.scope, id.Name, narrowedTargetT)
 				}
 				if c.AsName != "" && c.AsName != "_" {
 					_ = caseScope.Declare(c.AsName, narrowedTargetT)
@@ -5164,7 +5430,7 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 				narrowedTargetT := narrowTypeByPattern(targetT, narrowT)
 				// If target is an identifier, narrow its type inside this case scope
 				if id, isId := e.Target.(*ast.Identifier); isId {
-					_ = caseScope.Declare(id.Name, narrowedTargetT)
+					caseScope.declareNarrowed(inf.scope, id.Name, narrowedTargetT)
 				}
 				if c.AsName != "" && c.AsName != "_" {
 					_ = caseScope.Declare(c.AsName, narrowedTargetT)
