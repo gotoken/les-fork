@@ -411,7 +411,7 @@ func (s *Scope) Declare(name string, t Type) error {
 	if s.declared[name] {
 		existingType := s.bindings[name]
 		if !IsAssignableTo(t, existingType) {
-			return fmt.Errorf("cannot assign value of type %s to variable '%s' of type %s", t, name, existingType)
+			return fmt.Errorf("cannot assign value of type %s to variable '%s' of type %s", qual(t, existingType), name, qual(existingType, t))
 		}
 		s.bindings[name] = t
 		return nil
@@ -1599,7 +1599,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					if !ContainsSelfOrParam(curConstraint) && !ContainsSelfOrParam(curDefault) {
 						if !IsAssignableTo(curDefault, curConstraint) {
 							inf.scope = origScope
-							return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", curDefault, curConstraint, tp.Name)
+							return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", qual(curDefault, curConstraint), qual(curConstraint, curDefault), tp.Name)
 						}
 					}
 				}
@@ -1636,7 +1636,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					if origScope != nil {
 						inf.scope = origScope
 					}
-					return inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, elemType, defT)
+					return inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, qual(elemType, defT), qual(defT, elemType))
 				}
 			} else if !p.IsVariadic {
 				minArity++
@@ -1685,7 +1685,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					if origScope != nil {
 						inf.scope = origScope
 					}
-					return inf.nodeErr(s.BlockParam.DefaultValue, "type mismatch in default value for block parameter '&%s': expected %s, got %s", s.BlockParam.Name, blockT, defT)
+					return inf.nodeErr(s.BlockParam.DefaultValue, "type mismatch in default value for block parameter '&%s': expected %s, got %s", s.BlockParam.Name, qual(blockT, defT), qual(defT, blockT))
 				}
 			}
 		}
@@ -1845,7 +1845,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			return err
 		}
 		if !IsAssignableTo(valT, expectedT) {
-			return inf.nodeErr(s, "cannot assign type %s to field '%s' of type %s in struct '%s'", valT, s.Member, expectedT, st.Name)
+			return inf.nodeErr(s, "cannot assign type %s to field '%s' of type %s in struct '%s'", qual(valT, expectedT), s.Member, qual(expectedT, valT), st.Name)
 		}
 		return nil
 
@@ -2051,7 +2051,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 								if origScope != nil {
 									inf.scope = origScope
 								}
-								return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s in method '%s'", curDefault, curConstraint, tp.Name, m.Name)
+								return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s in method '%s'", qual(curDefault, curConstraint), qual(curConstraint, curDefault), tp.Name, m.Name)
 							}
 						}
 					}
@@ -2251,7 +2251,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 						if origScope != nil {
 							inf.scope = origScope
 						}
-						return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", curDefault, curConstraint, tp.Name)
+						return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", qual(curDefault, curConstraint), qual(curConstraint, curDefault), tp.Name)
 					}
 				}
 			}
@@ -2345,7 +2345,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 						if origScope != nil {
 							inf.scope = origScope
 						}
-						return inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, pExpected, defT)
+						return inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, qual(pExpected, defT), qual(defT, pExpected))
 					}
 				}
 				paramIdx++
@@ -2371,7 +2371,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					if origScope != nil {
 						inf.scope = origScope
 					}
-					return inf.nodeErr(m.BlockParam.DefaultValue, "type mismatch in default value for block parameter '&%s': expected %s, got %s", m.BlockParam.Name, bExpected, defT)
+					return inf.nodeErr(m.BlockParam.DefaultValue, "type mismatch in default value for block parameter '&%s': expected %s, got %s", m.BlockParam.Name, qual(bExpected, defT), qual(defT, bExpected))
 				}
 			}
 
@@ -2574,7 +2574,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 								if origScope != nil {
 									inf.scope = origScope
 								}
-								return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s in method '%s'", curDefault, curConstraint, tp.Name, m.Name)
+								return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s in method '%s'", qual(curDefault, curConstraint), qual(curConstraint, curDefault), tp.Name, m.Name)
 							}
 						}
 					}
@@ -2694,7 +2694,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 						if origScope != nil {
 							inf.scope = origScope
 						}
-						return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", curDefault, curConstraint, tp.Name)
+						return inf.nodeErr(s, "default type %s does not satisfy constraint %s for type parameter %s", qual(curDefault, curConstraint), qual(curConstraint, curDefault), tp.Name)
 					}
 				}
 			}
@@ -3238,7 +3238,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				if m, err := st.LookupMember("=="); err == nil {
 					if fnT, ok := m.(*FuncType); ok {
 						if pT, ok := getFirstParamType(fnT); ok && !IsAssignableTo(rightT, pT) {
-							return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", pT, rightT)
+							return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", qual(pT, rightT), qual(rightT, pT))
 						}
 						return fnT.Ret, nil
 					}
@@ -3248,7 +3248,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				resolvedIt := ResolveInterfaceForReceiver(it, it)
 				if m, ok := resolvedIt.LookupMethod("=="); ok {
 					if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-						return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", pT, rightT)
+						return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", qual(pT, rightT), qual(rightT, pT))
 					}
 					return m.Ret, nil
 				}
@@ -3258,7 +3258,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 					resolvedIt := ResolveInterfaceForReceiver(it, tp)
 					if m, ok := resolvedIt.LookupMethod("=="); ok {
 						if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-							return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", pT, rightT)
+							return nil, inf.nodeErr(e.Right, "type mismatch in operator '!=': expected %s, got %s", qual(pT, rightT), qual(rightT, pT))
 						}
 						return m.Ret, nil
 					}
@@ -3273,7 +3273,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 						for _, ov := range fnT.Overloads {
 							if ov.MinArity <= 1 && (ov.MaxArity < 0 || ov.MaxArity >= 1) {
 								if pT, ok := getFirstParamType(ov); ok && !IsAssignableTo(rightT, pT) {
-									return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+									return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 								}
 								return ov.Ret, nil
 							}
@@ -3284,7 +3284,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 						return nil, inf.nodeErr(e, "operator %s requires 1 argument, but method has arity %d..%d", e.Op, fnT.MinArity, fnT.MaxArity)
 					}
 					if pT, ok := getFirstParamType(fnT); ok && !IsAssignableTo(rightT, pT) {
-						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 					}
 					return fnT.Ret, nil
 				}
@@ -3293,7 +3293,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				if m, err := st.LookupMember("<"); err == nil {
 					if fnT, ok := m.(*FuncType); ok {
 						if pT, ok := getFirstParamType(fnT); ok && !IsAssignableTo(rightT, pT) {
-							return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+							return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 						}
 						return fnT.Ret, nil
 					}
@@ -3307,14 +3307,14 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 					return nil, inf.nodeErr(e, "operator %s requires 1 argument, but interface method has arity %d..%d", e.Op, m.MinArity, m.MaxArity)
 				}
 				if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-					return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+					return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 				}
 				return m.Ret, nil
 			}
 			if e.Op == "<=" || e.Op == ">" || e.Op == ">=" {
 				if m, ok := resolvedIt.LookupMethod("<"); ok {
 					if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 					}
 					return m.Ret, nil
 				}
@@ -3325,14 +3325,14 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				resolvedIt := ResolveInterfaceForReceiver(it, tp)
 				if m, ok := resolvedIt.LookupMethod(e.Op); ok {
 					if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 					}
 					return m.Ret, nil
 				}
 				if e.Op == "<=" || e.Op == ">" || e.Op == ">=" {
 					if m, ok := resolvedIt.LookupMethod("<"); ok {
 						if pT, ok := getFirstParamType(m); ok && !IsAssignableTo(rightT, pT) {
-							return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+							return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 						}
 						return m.Ret, nil
 					}
@@ -3364,7 +3364,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 			if _, isTupleConstraint := tp.Constraint.(*TupleType); !isTupleConstraint {
 				if bSig, ok := LookupBuiltinTypeMethod(tp.Constraint, e.Op); ok {
 					if pT, ok := getFirstParamType(bSig); ok && !IsAssignableTo(rightT, pT) {
-						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, pT, rightT)
+						return nil, inf.nodeErr(e.Right, "type mismatch in operator '%s': expected %s, got %s", e.Op, qual(pT, rightT), qual(rightT, pT))
 					}
 					if bSig.Ret == TypeBool {
 						return TypeBool, nil
@@ -3392,12 +3392,12 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				}
 				rightTuple, ok := effRightT.(*TupleType)
 				if !ok {
-					return nil, inf.nodeErr(e.Right, "type mismatch in operator '+': expected tuple, got %s", rightT)
+					return nil, inf.nodeErr(e.Right, "type mismatch in operator '+': expected tuple, got %s", qual(rightT, rightT))
 				}
 				return appendToTuple(leftTuple, rightTuple.Elems, rightTuple.IsVariadic), nil
 			}
 			if _, ok := effRightT.(*TupleType); ok {
-				return nil, inf.nodeErr(e.Left, "type mismatch in operator '+': expected tuple, got %s", leftT)
+				return nil, inf.nodeErr(e.Left, "type mismatch in operator '+': expected tuple, got %s", qual(leftT, leftT))
 			}
 			if leftT == TypeUnknown || rightT == TypeUnknown {
 				return TypeUnknown, nil
@@ -3406,7 +3406,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				return TypeBytes, nil
 			}
 			if leftT == TypeBytes || rightT == TypeBytes {
-				return nil, inf.nodeErr(e, "cannot add %s and %s", leftT, rightT)
+				return nil, inf.nodeErr(e, "cannot add %s and %s", qual(leftT, rightT), qual(rightT, leftT))
 			}
 			if leftT == TypeString || rightT == TypeString {
 				return TypeString, nil
@@ -3420,7 +3420,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				return TypeUnknown, nil
 			}
 			if leftT == TypeBytes || rightT == TypeBytes {
-				return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, leftT, rightT)
+				return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, qual(leftT, rightT), qual(rightT, leftT))
 			}
 			if leftT == TypeFloat || rightT == TypeFloat {
 				return TypeFloat, nil
@@ -3436,7 +3436,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 				}
 				return TypeUnknown, nil
 			}
-			return nil, inf.nodeErr(e, "operator =~ expects String and Regex, got %s and %s", leftT, rightT)
+			return nil, inf.nodeErr(e, "operator =~ expects String and Regex, got %s and %s", qual(leftT, rightT), qual(rightT, leftT))
 		case "==", "!=", "<", "<=", ">", ">=":
 			return TypeBool, nil
 		case "&&", "||":
@@ -3447,31 +3447,31 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 			}
 			if leftT == TypeUnknown || rightT == TypeUnknown {
 				if leftT != TypeUnknown && leftT != TypeInt {
-					return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", leftT, rightT)
+					return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", qual(leftT, rightT), qual(rightT, leftT))
 				}
 				if rightT != TypeUnknown && rightT != TypeInt {
-					return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", leftT, rightT)
+					return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", qual(leftT, rightT), qual(rightT, leftT))
 				}
 				return TypeUnknown, nil
 			}
 			if leftT == TypeInt && rightT == TypeInt {
 				return TypeInt, nil
 			}
-			return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", leftT, rightT)
+			return nil, inf.nodeErr(e, "cannot perform << operation on %s and %s", qual(leftT, rightT), qual(rightT, leftT))
 		case "&", "|", "^", ">>":
 			if leftT == TypeUnknown || rightT == TypeUnknown {
 				if leftT != TypeUnknown && leftT != TypeInt {
-					return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, leftT, rightT)
+					return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, qual(leftT, rightT), qual(rightT, leftT))
 				}
 				if rightT != TypeUnknown && rightT != TypeInt {
-					return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, leftT, rightT)
+					return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, qual(leftT, rightT), qual(rightT, leftT))
 				}
 				return TypeUnknown, nil
 			}
 			if leftT == TypeInt && rightT == TypeInt {
 				return TypeInt, nil
 			}
-			return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, leftT, rightT)
+			return nil, inf.nodeErr(e, "cannot perform %s operation on %s and %s", e.Op, qual(leftT, rightT), qual(rightT, leftT))
 		default:
 			return TypeUnknown, nil
 		}
@@ -3862,7 +3862,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 									return nil, err
 								}
 								if !IsAssignableTo(argT, expectedParamT) {
-									return nil, inf.nodeErr(arg, "type mismatch in argument %d of struct '%s' constructor: expected %s, got %s", i+1, st.Name, expectedParamT, argT)
+									return nil, inf.nodeErr(arg, "type mismatch in argument %d of struct '%s' constructor: expected %s, got %s", i+1, st.Name, qual(expectedParamT, argT), qual(argT, expectedParamT))
 								}
 							}
 						}
@@ -4002,7 +4002,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 						return nil, err
 					}
 					if fnT.BlockParam != TypeUnknown && !IsAssignableTo(bT, fnT.BlockParam) {
-						return nil, inf.nodeErr(e.Block, "type mismatch for block argument: expected %s, got %s", fnT.BlockParam, bT)
+						return nil, inf.nodeErr(e.Block, "type mismatch for block argument: expected %s, got %s", qual(fnT.BlockParam, bT), qual(bT, fnT.BlockParam))
 					}
 				} else if !fnT.BlockOpt {
 					return nil, inf.nodeErr(e, "function requires a block argument (&block)")
@@ -4283,7 +4283,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 					return nil, err
 				}
 				if elemType != TypeUnknown && !IsAssignableTo(defT, elemType) {
-					return nil, inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, elemType, defT)
+					return nil, inf.nodeErr(p.DefaultValue, "type mismatch in default value for parameter '%s': expected %s, got %s", p.Name, qual(elemType, defT), qual(defT, elemType))
 				}
 			} else if !p.IsVariadic {
 				minArity++

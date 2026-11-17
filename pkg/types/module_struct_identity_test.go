@@ -294,3 +294,210 @@ o = Outer()
 b: m2::Base = o.Base
 `, "expected m2::Base, got m1::Base")
 }
+
+func TestQualCompoundAndNestedMismatchMessages(t *testing.T) {
+	files := map[string]string{
+		"m1": identityM1,
+		"m2": identityM2,
+		"c1": "module c1\nstruct Box[T]:\n    val: T\n",
+		"c2": "module c2\nstruct Box[T]:\n    val: T\n",
+	}
+
+	// Different generic structs even when type args differ
+	wantIdentityErr(t, files, `
+import c1
+import c2
+b: c1::Box[Int] = c2::Box(val: "s")
+`, "expected c1::Box[Int], got c2::Box[String]")
+
+	// Same generic struct holding conflicting module structs in type args
+	wantIdentityErr(t, files, `
+import m1
+import m2
+import c1
+b: c1::Box[m1::Base] = c1::Box[m2::Base](val: m2::Base(Y: "s"))
+`, "expected Box[m1::Base], got Box[m2::Base]")
+
+	// Tuples
+	wantIdentityErr(t, files, `
+import m1
+import m2
+p: (m1::Base, Int) = (m2::Base(Y: "s"), 1)
+`, "expected (m1::Base, Int), got (m2::Base, Int)")
+
+	// Dicts
+	wantIdentityErr(t, files, `
+import m1
+import m2
+d: {m1::Base: Int} = {m2::Base(Y: "s"): 1}
+`, "expected {m1::Base: Int}, got {m2::Base: Int}")
+
+	// Function types
+	wantIdentityErr(t, files, `
+import m1
+import m2
+def takesM2(b: m2::Base) -> Int:
+    0
+fn: (m1::Base) -> Int = takesM2
+`, "expected (m1::Base) -> Int, got (m2::Base) -> Int")
+
+	// Union vs single struct and intra-union conflict vs unrelated type
+	wantIdentityErr(t, files, `
+import m1
+import m2
+def take(x: m1::Base | Nil) -> Int:
+    0
+def f(y: m2::Base) -> Int:
+    take(y)
+`, "expected m1::Base | Nil, got m2::Base")
+
+	wantIdentityErr(t, files, `
+import m1
+import m2
+u: m1::Base | m2::Base = 1
+`, "expected m1::Base | m2::Base, got Int")
+
+	// Parameterized interface instantiation cache keeps m1::Base and m2::Base apart
+	wantIdentityErr(t, files, `
+import m1
+import m2
+interface Need[T]:
+    Get(): T
+struct Hold[T]:
+    v: T
+    def Get(self) -> T:
+        self.v
+x: Need[m1::Base] = Hold[m2::Base](v: m2::Base(Y: "s"))
+`, "expected Need[m1::Base], got Hold[m2::Base]")
+}
+
+func TestQualUnmodifiedWhenNoConflict(t *testing.T) {
+	files := map[string]string{
+		"c1": "module c1\nstruct Box[T]:\n    val: T\n",
+	}
+	// Same module struct with different type args stays unqualified
+	wantIdentityErr(t, files, `
+import c1
+b: c1::Box[Int] = c1::Box(val: "s")
+`, "type mismatch for variable 'b': expected Box[Int], got Box[String]")
+
+	// Verify formatQualifiedType matches Type.String() directly when ambig is empty
+	st1 := &StructType{Name: "Base", DeclModule: "/a/m1.les", DeclModuleName: "m1"}
+	box := InstantiateStruct(&StructType{Name: "Box", DeclModule: "/a/c1.les", DeclModuleName: "c1", TypeParams: []TypeParamDef{{Name: "T"}}}, []Type{st1})
+	iface := &InterfaceType{Name: "Holder", TypeParams: []TypeParamDef{{Name: "T"}}}
+	instIface := InstantiateInterface(iface, []Type{st1})
+	cases := []Type{
+		st1,
+		box,
+		instIface,
+		&TupleType{Elems: []Type{st1, TypeInt}},
+		&TupleType{Elems: []Type{st1}, IsVariadic: true},
+		&DictType{Key: st1, Value: TypeInt},
+		&FuncType{Arg: &TupleType{Elems: []Type{st1}}, BlockParam: &FuncType{Arg: &TupleType{}, Ret: TypeNil}, Ret: st1},
+		NewUnionType(st1, TypeNil),
+	}
+	for _, typ := range cases {
+		if got, want := formatQualifiedType(typ, nil), typ.String(); got != want {
+			t.Fatalf("formatQualifiedType(%s, nil) = %q, want %q", typ, got, want)
+		}
+	}
+}
+
+func TestQualCoversAllMismatchCallSites(t *testing.T) {
+	opM1 := `module m1
+struct Base:
+    X: Int
+    def +(self, other: Base) -> Base:
+        Base(X: self.X + other.X)
+    def ==(self, other: Base) -> Bool:
+        self.X == other.X
+`
+	files := map[string]string{
+		"m1": opM1,
+		"m2": identityM2,
+	}
+
+	// Variable reassignment (Scope.Declare)
+	wantIdentityErr(t, files, `
+import m1
+import m2
+x = m1::Base(X: 1)
+x = m2::Base(Y: "s")
+`, "cannot assign value of type m2::Base to variable 'x' of type m1::Base")
+
+	// Member assignment (MemberAssignStmt)
+	wantIdentityErr(t, files, `
+import m1
+import m2
+struct Holder:
+    f: m1::Base
+h = Holder(f: m1::Base(X: 1))
+h.f = m2::Base(Y: "s")
+`, "cannot assign type m2::Base to field 'f' of type m1::Base")
+
+	// Default parameter value in function
+	wantIdentityErr(t, files, `
+import m1
+import m2
+def fn(b: m1::Base = m2::Base(Y: "s")) -> Int:
+    0
+`, "type mismatch in default value for parameter 'b': expected m1::Base, got m2::Base")
+
+	// Default parameter value in method
+	wantIdentityErr(t, files, `
+import m1
+import m2
+struct S:
+    def m(self, b: m1::Base = m2::Base(Y: "s")) -> Int:
+        0
+`, "type mismatch in default value for parameter 'b': expected m1::Base, got m2::Base")
+
+	// Call block argument mismatch
+	wantIdentityErr(t, files, `
+import m1
+import m2
+def run(&cb: (m1::Base) -> ()) -> Int:
+    0
+run() do |x: m2::Base|: 0
+`, "type mismatch for block argument: expected (m1::Base) -> (), got (m2::Base) -> ()")
+
+	// Operator mismatches (== / != / +)
+	wantIdentityErr(t, files, `
+import m1
+import m2
+r = m1::Base(X: 1) + m2::Base(Y: "s")
+`, "type mismatch in operator '+': expected m1::Base, got m2::Base")
+
+	wantIdentityErr(t, files, `
+import m1
+import m2
+r = m1::Base(X: 1) != m2::Base(Y: "s")
+`, "type mismatch in operator '!=': expected m1::Base, got m2::Base")
+
+	// Struct constructor positional argument (init method)
+	wantIdentityErr(t, files, `
+import m1
+import m2
+struct S:
+    b: m1::Base
+    def init(self, b: m1::Base) -> S:
+        @b = b
+        self
+s = S(m2::Base(Y: "s"))
+`, "type mismatch in argument 1 of struct 'S' constructor: expected m1::Base, got m2::Base")
+
+	// Type parameter constraint violation (ValidateTypeConstraints)
+	wantIdentityErr(t, files, `
+import m1
+import m2
+interface NeedM1[T]:
+    Get(): T
+struct Box[T]:
+    v: T
+    def Get(self) -> T:
+        self.v
+def take[U: NeedM1[m1::Base]](u: U) -> Int:
+    0
+r = take[Box[m2::Base]](Box[m2::Base](v: m2::Base(Y: "s")))
+`, "type Box[m2::Base] does not satisfy constraint NeedM1[m1::Base] for type parameter U")
+}

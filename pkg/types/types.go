@@ -1645,21 +1645,236 @@ func sameStructDecl(a, b *StructType) bool {
 	return a.Name == b.Name && (a.DeclModule == "" || b.DeclModule == "" || a.DeclModule == b.DeclModule)
 }
 
-// qualifiedStruct prints a struct type prefixed with its declaring module.
-type qualifiedStruct struct{ st *StructType }
+// qualifiedType wraps a Type so String() qualifies any conflicting struct with
+// its declaring module name.
+type qualifiedType struct {
+	typ   Type
+	ambig map[string]bool
+}
 
-func (q qualifiedStruct) String() string { return q.st.DeclModuleName + "::" + q.st.String() }
+func (q qualifiedType) String() string {
+	return formatQualifiedType(q.typ, q.ambig)
+}
 
-// qual returns t for printing in a mismatch message. When t and other print
-// the same but are different structs, t is qualified with its module so
-// that the message tells them apart.
+// qual returns t for printing in a mismatch message. When any struct name
+// refers to multiple distinct module declarations across t and other, each
+// colliding struct is qualified with its declaring module name (including inside
+// nested type arguments, tuples, dicts, unions, and function signatures).
 func qual(t, other Type) fmt.Stringer {
-	a, ok1 := t.(*StructType)
-	b, ok2 := other.(*StructType)
-	if ok1 && ok2 && a.DeclModuleName != "" && a.String() == b.String() && !a.Equals(b) {
-		return qualifiedStruct{a}
+	if t == nil {
+		return nil
 	}
-	return t
+	ambig := conflictingStructNames(t, other)
+	if len(ambig) == 0 {
+		return t
+	}
+	return qualifiedType{typ: t, ambig: ambig}
+}
+
+// conflictingStructNames collects simple struct names that resolve to more than
+// one distinct non-empty DeclModule across roots.
+func conflictingStructNames(roots ...Type) map[string]bool {
+	seenTypes := make(map[Type]bool)
+	byName := make(map[string][]*StructType)
+	var visit func(t Type)
+	visit = func(t Type) {
+		if t == nil {
+			return
+		}
+		switch typ := t.(type) {
+		case *StructType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			byName[typ.Name] = append(byName[typ.Name], typ)
+			for _, a := range typ.TypeArgs {
+				visit(a)
+			}
+		case *InterfaceType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			for _, a := range typ.TypeArgs {
+				visit(a)
+			}
+		case *TupleType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			for _, el := range typ.Elems {
+				visit(el)
+			}
+		case *DictType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			visit(typ.Key)
+			visit(typ.Value)
+		case *FuncType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			if len(typ.Overloads) > 0 {
+				for _, ov := range typ.Overloads {
+					visit(ov)
+				}
+				return
+			}
+			visit(typ.Arg)
+			visit(typ.BlockParam)
+			visit(typ.Ret)
+		case *UnionType:
+			if seenTypes[typ] {
+				return
+			}
+			seenTypes[typ] = true
+			for _, m := range typ.Members {
+				visit(m)
+			}
+		}
+	}
+	for _, r := range roots {
+		visit(r)
+	}
+	var ambig map[string]bool
+	for name, list := range byName {
+		if len(list) < 2 {
+			continue
+		}
+		firstMod := ""
+		for _, s := range list {
+			if s.DeclModule == "" {
+				continue
+			}
+			if firstMod == "" {
+				firstMod = s.DeclModule
+			} else if s.DeclModule != firstMod {
+				if ambig == nil {
+					ambig = make(map[string]bool)
+				}
+				ambig[name] = true
+				break
+			}
+		}
+	}
+	return ambig
+}
+
+func formatQualifiedType(t Type, ambig map[string]bool) string {
+	return formatTypeWith(t, func(s *StructType) string {
+		if ambig[s.Name] && s.DeclModuleName != "" {
+			return s.DeclModuleName + "::" + s.Name
+		}
+		return s.Name
+	})
+}
+
+func instCacheKey(typeArgs []Type) string {
+	parts := make([]string, len(typeArgs))
+	for i, a := range typeArgs {
+		parts[i] = formatTypeWith(a, func(s *StructType) string {
+			if s.DeclModule != "" {
+				return s.DeclModule + "::" + s.Name
+			}
+			return s.Name
+		})
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatTypeWith(t Type, structName func(*StructType) string) string {
+	if t == nil {
+		return ""
+	}
+	switch typ := t.(type) {
+	case *StructType:
+		name := structName(typ)
+		if len(typ.TypeArgs) > 0 {
+			args := make([]string, len(typ.TypeArgs))
+			for i, a := range typ.TypeArgs {
+				args[i] = formatTypeWith(a, structName)
+			}
+			return fmt.Sprintf("%s[%s]", name, strings.Join(args, ", "))
+		}
+		return name
+	case *InterfaceType:
+		if len(typ.TypeArgs) > 0 {
+			args := make([]string, len(typ.TypeArgs))
+			for i, a := range typ.TypeArgs {
+				args[i] = formatTypeWith(a, structName)
+			}
+			return fmt.Sprintf("%s[%s]", typ.Name, strings.Join(args, ", "))
+		}
+		return typ.Name
+	case *TupleType:
+		if typ.IsVariadic && (len(typ.Elems) == 0 || (len(typ.Elems) == 1 && typ.Elems[0] == TypeUnknown)) {
+			return "(...)"
+		}
+		var b strings.Builder
+		b.WriteByte('(')
+		for i, el := range typ.Elems {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(formatTypeWith(el, structName))
+		}
+		if typ.IsVariadic {
+			if len(typ.Elems) > 0 {
+				b.WriteString(", ...")
+			} else {
+				b.WriteString("...")
+			}
+		}
+		b.WriteByte(')')
+		return b.String()
+	case *DictType:
+		if typ.Key == TypeUnknown && typ.Value == TypeUnknown {
+			return "{...}"
+		}
+		return fmt.Sprintf("{%s: %s}", formatTypeWith(typ.Key, structName), formatTypeWith(typ.Value, structName))
+	case *FuncType:
+		if len(typ.Overloads) > 0 {
+			parts := make([]string, len(typ.Overloads))
+			for i, ov := range typ.Overloads {
+				parts[i] = formatTypeWith(ov, structName)
+			}
+			return strings.Join(parts, " | ")
+		}
+		if typ.OverloadUnion != "" {
+			return typ.OverloadUnion
+		}
+		argStr := formatTypeWith(typ.Arg, structName)
+		if typ.BlockParam != nil {
+			bpStr := formatTypeWith(typ.BlockParam, structName)
+			if tup, ok := typ.Arg.(*TupleType); ok {
+				parts := make([]string, 0, len(tup.Elems)+2)
+				for _, el := range tup.Elems {
+					parts = append(parts, formatTypeWith(el, structName))
+				}
+				if tup.IsVariadic {
+					parts = append(parts, "...")
+				}
+				parts = append(parts, bpStr)
+				argStr = "(" + strings.Join(parts, ", ") + ")"
+			} else {
+				argStr = fmt.Sprintf("(%s, %s)", formatTypeWith(typ.Arg, structName), bpStr)
+			}
+		}
+		return fmt.Sprintf("%s -> %s", argStr, formatTypeWith(typ.Ret, structName))
+	case *UnionType:
+		parts := make([]string, len(typ.Members))
+		for i, m := range typ.Members {
+			parts[i] = formatTypeWith(m, structName)
+		}
+		return strings.Join(parts, " | ")
+	default:
+		return t.String()
+	}
 }
 
 type memberCandidate struct {
@@ -2229,11 +2444,7 @@ func InstantiateStruct(s *StructType, typeArgs []Type) *StructType {
 		}
 		typeArgs = fullArgs
 	}
-	var argStrs []string
-	for _, a := range typeArgs {
-		argStrs = append(argStrs, a.String())
-	}
-	cacheKey := strings.Join(argStrs, ", ")
+	cacheKey := instCacheKey(typeArgs)
 	if origin.instCache != nil {
 		if cached, ok := origin.instCache[cacheKey]; ok {
 			return cached
@@ -2304,11 +2515,7 @@ func InstantiateInterface(i *InterfaceType, typeArgs []Type) *InterfaceType {
 		}
 		typeArgs = fullArgs
 	}
-	var argStrs []string
-	for _, a := range typeArgs {
-		argStrs = append(argStrs, a.String())
-	}
-	cacheKey := strings.Join(argStrs, ", ")
+	cacheKey := instCacheKey(typeArgs)
 	if origin.instCache != nil {
 		if cached, ok := origin.instCache[cacheKey]; ok {
 			return cached
@@ -2371,7 +2578,7 @@ func ValidateTypeConstraints(typeParams []TypeParamDef, typeArgs []Type) error {
 			subConstraint := Substitute(tp.Constraint, bindings)
 			if !ContainsSelfOrParam(fullArgs[i]) && !ContainsSelfOrParam(subConstraint) {
 				if !IsAssignableTo(fullArgs[i], subConstraint) {
-					return fmt.Errorf("type %s does not satisfy constraint %s for type parameter %s", fullArgs[i].String(), subConstraint.String(), tp.Name)
+					return fmt.Errorf("type %s does not satisfy constraint %s for type parameter %s", qual(fullArgs[i], subConstraint), qual(subConstraint, fullArgs[i]), tp.Name)
 				}
 			}
 		}
