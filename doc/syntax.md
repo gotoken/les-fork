@@ -79,7 +79,7 @@ This document provides a comprehensive specification and guide to the syntax, ty
 >   - `()` represents the type of an **empty `Tuple`**.
 >   - `() | (T,)` represents a `Tuple` that contains **either 0 or 1 element** of type `T`.
 
-Type annotations are optional (full HM-style type inference):
+Type annotations are optional (bidirectional local & gradual type inference):
 ```python
 x: Int = 10
 p: (Int, String) = (1, "ok")
@@ -468,8 +468,8 @@ Anonymous functions (lambdas) support both single-line expressions and multi-lin
 - User-defined functions cannot create raw side-effect primitives.
 
 ### Type System, Type Inference & Pattern Matching
-- **Static Type Inference & Optional Annotations**:
-  - Les features static type inference based on the Hindley-Milner algorithm. Explicit type annotations on variables, parameters, and return types are entirely optional:
+- **Bidirectional Local & Gradual Type Inference & Optional Annotations**:
+  - Les combines bidirectional local type inference with gradual typing (`Unknown` fallback). Explicit type annotations on local variables, return types, generic call arguments, and contextual lambda parameters are optional:
     ```python
     x = 10              # inferred as Int
     s = "hello"         # inferred as String
@@ -481,7 +481,7 @@ Anonymous functions (lambdas) support both single-line expressions and multi-lin
     def identity(x): x  # parameter and return type inferred as Unknown
     ```
   - **Inferred Types on Lazy Thunks**:
-    Statically inferred types are propagated to lazy `Thunk` values at runtime (`thunk.InferredType`). This allows runtime type tests (`is`) and inspection (`.Type()`) to determine element types without forcing deferred computations or triggering premature side effects.
+    Statically inferred types are propagated to lazy `Thunk` values at runtime (`thunk.InferredType`). This allows runtime type tests (`is`, `match`) and inspection (`.Type()`) to determine element types without forcing deferred computations or triggering premature side effects; when the inferred type is `Unknown`, concrete checking is likewise deferred until forced, preserving laziness in gradual code.
 - **Function Types (`->`)**:
   Function types represent callable types mapping argument types to a return type: `(Arg1, Arg2) -> Ret`.
   - **Syntax**: `(T1, T2) -> Ret`, `(T) -> Ret`, `() -> Ret`, or right-associative higher-order types `(A) -> (B) -> C`.
