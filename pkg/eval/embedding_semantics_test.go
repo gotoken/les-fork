@@ -212,6 +212,7 @@ d = Derived(Base: Base(k: 1))
 `
 	embSemRun(t, []embSemCase{
 		{"promoted method satisfies", defs + `print show(d), " ", (d is Named), (d.Base is Named)`, "base truetrue"},
+		{"incompatible method does not", defs + `print Wrong(Base: Base(k: 1)) is Named`, "false"},
 	})
 }
 
@@ -358,6 +359,34 @@ i = Incompatible(Base: Base(X: boom()), X: boomS())
         "other"
 print r`, "other"},
 		{"union pattern naming the outer type", defs + `print (i is Base | Incompatible), (i is Base | Int)`, "truefalse"},
+	})
+}
+
+// Extra: an interface is never satisfied through the embedded instance when
+// the outer struct's own members do not satisfy it.
+func TestEmbeddingCommonInterfaceNotSatisfiedThroughShadowedEmbedded(t *testing.T) {
+	embSemRun(t, []embSemCase{
+		{"interface", `interface Named:
+    Name(): String
+struct Base:
+    def Name() -> String:
+        "base"
+struct Wrong:
+    Base
+    def Name() -> Int:
+        1
+w = Wrong(Base: Base())
+print (w is Named), (w.Base is Named)`, "falsetrue"},
+		{"generic interface", `interface Getter[T]:
+    Get(): T
+struct Base:
+    def Get() -> Int:
+        1
+struct Wrong:
+    Base
+    def Get() -> String:
+        "s"
+print (Wrong(Base: Base()) is Getter[Int]), (Base() is Getter[Int])`, "falsetrue"},
 	})
 }
 

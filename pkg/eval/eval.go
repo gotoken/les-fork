@@ -5730,7 +5730,10 @@ func instanceStructType(si *StructInstance) *types.StructType {
 // checkValueMatchesTypeVia is checkValueMatchesType for a value that may have
 // been reached by descending through embedded structs: root is the outermost
 // instance of that descent (nil at the top level). A struct match found below
-// root counts for root only if embeddedMatchAssignable allows it.
+// root counts for root only if embeddedMatchAssignable allows it. Below root
+// only struct matches count: an interface (or Error) is satisfied by root's own
+// members, which already include the promoted ones, never through an embedded
+// instance whose members root may shadow.
 func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string, optEnv ...*Environment) bool {
 	typeAnnot = strings.TrimSpace(typeAnnot)
 	if typeAnnot == "" {
@@ -6202,7 +6205,7 @@ func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string,
 						ifaceDef = id
 					}
 				}
-				if ifaceDef != nil {
+				if ifaceDef != nil && root == nil {
 					strBindings := make(map[string]string)
 					forcedVal := Force(val)
 					selfName := typeNameOf(forcedVal)
@@ -6230,7 +6233,7 @@ func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string,
 				}
 			}
 			// Check if typeAnnot is "Error"
-			if typeAnnot == "Error" {
+			if typeAnnot == "Error" && root == nil {
 				if _, err := si.LookupMember("Message"); err == nil {
 					return true
 				}
@@ -6261,7 +6264,7 @@ func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string,
 						if bf, isBF := forcedExp.(*BuiltinFunc); isBF && bf.TypeDef != nil {
 							forcedExp = Force(bf.TypeDef)
 						}
-						if ifaceDef, isIface := forcedExp.(*InterfaceDefValue); isIface {
+						if ifaceDef, isIface := forcedExp.(*InterfaceDefValue); isIface && root == nil {
 							return valueImplementsInterfaceValue(val, ifaceDef, searchEnv)
 						}
 						if structDef, isStruct := forcedExp.(*StructDefValue); isStruct {
@@ -6298,7 +6301,7 @@ func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string,
 				if bf, isBF := forced.(*BuiltinFunc); isBF && bf.TypeDef != nil {
 					forced = Force(bf.TypeDef)
 				}
-				if ifaceDef, isIface := forced.(*InterfaceDefValue); isIface {
+				if ifaceDef, isIface := forced.(*InterfaceDefValue); isIface && root == nil {
 					return valueImplementsInterfaceValue(val, ifaceDef, searchEnv)
 				}
 			}
