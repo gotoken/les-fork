@@ -147,8 +147,10 @@ type Diagnostic struct {
 var ErrInvalidInput = errors.New("analysis: invalid input")
 
 // Snapshot is the read-only result of one analysis run. All methods are safe
-// for concurrent use. The AST returned by Program is shared with the
-// snapshot and must not be modified; slices returned by methods are copies.
+// for concurrent use. The AST returned by Program (and the AST nodes inside
+// anchors) is shared with the snapshot and must not be modified. Everything
+// else a method returns (slices, span pointers, documentation) is a fresh
+// copy: changing it never affects later queries.
 // A snapshot keeps the source text, the AST and its indexes alive until it is
 // no longer referenced. Symbol IDs are meaningful only within one snapshot;
 // they are deterministic for the same input and options.
@@ -247,7 +249,14 @@ func (s *Snapshot) SemanticStatus() SemanticStatus { return s.semState }
 
 // Diagnostics returns syntax errors, type errors and warnings, and analysis
 // notes, in that order.
-func (s *Snapshot) Diagnostics() []Diagnostic { return append([]Diagnostic(nil), s.diags...) }
+// The result shares no memory with the snapshot.
+func (s *Snapshot) Diagnostics() []Diagnostic {
+	out := append([]Diagnostic(nil), s.diags...)
+	for i := range out {
+		out[i].Span = cloneSpan(out[i].Span)
+	}
+	return out
+}
 
 // Tokens returns the token spans (nil unless Ranges was enabled).
 func (s *Snapshot) Tokens() []TokenInfo {
@@ -293,7 +302,7 @@ func (s *Snapshot) Comments() []source.Comment {
 	if s.comments == nil {
 		return nil
 	}
-	return append([]source.Comment(nil), s.comments.Comments()...)
+	return s.comments.Comments()
 }
 
 // Associations returns the syntactic relation of each comment.

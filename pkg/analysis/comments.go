@@ -177,9 +177,10 @@ func IndexComments(res *parser.Result) (*CommentIndex, error) {
 	return ci, nil
 }
 
-// Comments returns all comments in source order. The slice must not be
-// modified.
-func (ci *CommentIndex) Comments() []source.Comment { return ci.comments }
+// Comments returns a copy of all comments in source order.
+func (ci *CommentIndex) Comments() []source.Comment {
+	return append([]source.Comment(nil), ci.comments...)
+}
 
 // Associations returns one association per comment, in comment order.
 func (ci *CommentIndex) Associations() []Association {

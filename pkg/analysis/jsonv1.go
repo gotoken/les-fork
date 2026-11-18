@@ -142,7 +142,7 @@ func (s *Snapshot) document() *jsonDoc {
 	}
 	if s.comments != nil {
 		for _, a := range s.comments.Associations() {
-			c := s.comments.Comments()[a.Comment]
+			c := s.comments.comments[a.Comment]
 			d.Comments = append(d.Comments, jsonComment{Range: s.jr(c.Span), Text: c.Text, Relation: a.Relation.String(), Anchor: s.anchorJSON(a.Anchor)})
 		}
 	}

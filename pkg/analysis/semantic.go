@@ -51,6 +51,21 @@ type Symbol struct {
 	Annotation string
 }
 
+// clone returns a copy of sym that shares no memory with the snapshot.
+func (sym Symbol) clone() Symbol {
+	sym.NameSpan = cloneSpan(sym.NameSpan)
+	sym.DeclSpan = cloneSpan(sym.DeclSpan)
+	return sym
+}
+
+func cloneSpan(sp *source.Span) *source.Span {
+	if sp == nil {
+		return nil
+	}
+	c := *sp
+	return &c
+}
+
 // TypeInfo is the type of an expression or declared name.
 type TypeInfo struct {
 	Span  source.Span
@@ -485,7 +500,7 @@ func (s *Snapshot) Symbols() []Symbol {
 	}
 	out := make([]Symbol, 0, len(s.sem.syms)+len(s.sem.builtins))
 	for _, e := range s.sem.syms {
-		out = append(out, e.sym)
+		out = append(out, e.sym.clone())
 	}
 	var names []string
 	for n := range s.sem.builtins {
@@ -493,7 +508,7 @@ func (s *Snapshot) Symbols() []Symbol {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		out = append(out, s.sem.builtins[n].sym)
+		out = append(out, s.sem.builtins[n].sym.clone())
 	}
 	return out
 }
@@ -507,7 +522,7 @@ func (s *Snapshot) Symbol(id SymbolID) (Symbol, bool) {
 	if !ok {
 		return Symbol{}, false
 	}
-	return e.sym, true
+	return e.sym.clone(), true
 }
 
 // Definition returns the span of the symbol's declared name. ok is false for
@@ -556,7 +571,7 @@ func (s *Snapshot) SymbolAt(off int) SymbolAtResult {
 	}
 	for _, h := range s.sem.declHits {
 		if h.span.Contains(off) {
-			return SymbolAtResult{Found: true, Symbol: h.sym.sym, Span: h.span, Role: "declaration", Status: RefResolved}
+			return SymbolAtResult{Found: true, Symbol: h.sym.sym.clone(), Span: h.span, Role: "declaration", Status: RefResolved}
 		}
 	}
 	var best *Reference
@@ -572,7 +587,7 @@ func (s *Snapshot) SymbolAt(off int) SymbolAtResult {
 	out := SymbolAtResult{Span: best.Span, Role: "reference", Status: best.Status, Detail: best.Detail}
 	if best.Symbol != "" {
 		if e, ok := s.sem.byID[best.Symbol]; ok {
-			out.Found, out.Symbol = true, e.sym
+			out.Found, out.Symbol = true, e.sym.clone()
 		}
 	}
 	return out
