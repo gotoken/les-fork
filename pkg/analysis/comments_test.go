@@ -2,10 +2,13 @@ package analysis
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"les/pkg/ast"
+	"les/pkg/internal/benchcorpus"
 	"les/pkg/parser"
+	"les/pkg/source"
 )
 
 func indexed(t *testing.T, src string) (*parser.Result, *CommentIndex) {
@@ -229,5 +232,55 @@ func TestCommentAtEOFAndCRLF(t *testing.T) {
 func TestIndexCommentsNeedsMetadata(t *testing.T) {
 	if _, err := IndexComments(parser.Parse("x = 1", parser.Options{Comments: true})); err != ErrNeedsMetadata {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestContainerSweepMatchesScan checks the sweep used by IndexComments
+// against the plain scan, on valid and invalid inputs (review R5).
+func TestContainerSweepMatchesScan(t *testing.T) {
+	inputs := []string{
+		benchcorpus.Long(5),
+		"x = (1, # open\n$ # bad\n",
+		"def (: # c\n  struct\n",
+		"match x:\n  case 1: 2 # c\n",
+		"def f(x: Int) -> Int: +; if x < 0: +; -x -; else: +; x;; # tail\n",
+	}
+	for _, c := range benchcorpus.Corpus() {
+		inputs = append(inputs, c.Src)
+	}
+	for _, src := range inputs {
+		res := parser.Parse(src, parser.Options{Comments: true, Ranges: true})
+		ns := containerSpans(res.Program, res.Metadata.Ranges)
+		sweep := newContainerSweep(ns)
+		for _, c := range res.Metadata.Comments {
+			if got, want := sweep.innermost(c.Span), innermostContaining(ns, c.Span); got != want {
+				t.Fatalf("comment %q: sweep %T, scan %T", c.Text, got, want)
+			}
+		}
+		// Every offset as a zero-width span, in order.
+		sweep = newContainerSweep(ns)
+		for off := 0; off <= len(src); off++ {
+			sp := source.Span{Start: off, End: off}
+			if got, want := sweep.innermost(sp), innermostContaining(ns, sp); got != want {
+				t.Fatalf("offset %d: sweep %T, scan %T", off, got, want)
+			}
+		}
+	}
+}
+
+func TestLongDocumentationKeepsOrder(t *testing.T) {
+	src := longDoc(500)
+	s, err := Analyze(Input{Source: src}, All())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit := s.SymbolAt(strings.Index(src, "def f") + 4)
+	d, ok := s.Documentation(hit.Symbol.ID)
+	if !ok {
+		t.Fatal("no documentation")
+	}
+	lines := strings.Split(d.Text, "\n")
+	if len(lines) != 500 || lines[0] != "documentation line 0" || lines[499] != "documentation line 499" || len(d.Comments) != 500 || d.Comments[0] != 0 {
+		t.Errorf("doc: %d lines, first %q, last %q", len(lines), lines[0], lines[len(lines)-1])
 	}
 }

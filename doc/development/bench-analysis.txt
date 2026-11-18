@@ -1,0 +1,88 @@
+# Analysis-mode scaling benchmarks (review R5), count=3
+# go test -run '^$' -bench . -benchmem -count=3 ./pkg/analysis
+## before (sweep and doc-run fixes not applied; benchmark file only)
+BenchmarkIndexComments/long25-4         	    2589	    431405 ns/op	  450470 B/op	     801 allocs/op
+BenchmarkIndexComments/long25-4         	    2640	    430639 ns/op	  450465 B/op	     801 allocs/op
+BenchmarkIndexComments/long25-4         	    2720	    448503 ns/op	  450466 B/op	     801 allocs/op
+BenchmarkIndexComments/long100-4        	     445	   2905810 ns/op	 2035650 B/op	    3004 allocs/op
+BenchmarkIndexComments/long100-4        	     412	   2548765 ns/op	 2035652 B/op	    3004 allocs/op
+BenchmarkIndexComments/long100-4        	     460	   2788284 ns/op	 2035652 B/op	    3004 allocs/op
+BenchmarkIndexComments/long400-4        	      62	  22507672 ns/op	 8427884 B/op	   11766 allocs/op
+BenchmarkIndexComments/long400-4        	      60	  22343456 ns/op	 8427874 B/op	   11766 allocs/op
+BenchmarkIndexComments/long400-4        	      61	  22568559 ns/op	 8427884 B/op	   11766 allocs/op
+BenchmarkIndexComments/doc10-4          	  131779	      9429 ns/op	   11200 B/op	      63 allocs/op
+BenchmarkIndexComments/doc10-4          	  120150	      9531 ns/op	   11200 B/op	      63 allocs/op
+BenchmarkIndexComments/doc10-4          	  124498	     10328 ns/op	   11200 B/op	      63 allocs/op
+BenchmarkIndexComments/doc100-4         	   17763	     68742 ns/op	   97969 B/op	     255 allocs/op
+BenchmarkIndexComments/doc100-4         	   17738	     70847 ns/op	   97969 B/op	     255 allocs/op
+BenchmarkIndexComments/doc100-4         	   16572	     68456 ns/op	   97969 B/op	     255 allocs/op
+BenchmarkIndexComments/doc1000-4        	     495	   2393724 ns/op	 4841464 B/op	    2070 allocs/op
+BenchmarkIndexComments/doc1000-4        	     519	   2278986 ns/op	 4841464 B/op	    2070 allocs/op
+BenchmarkIndexComments/doc1000-4        	     519	   2600783 ns/op	 4841470 B/op	    2070 allocs/op
+BenchmarkIndexComments/doc10000-4       	       7	 151279996 ns/op	435723761 B/op	   20106 allocs/op
+BenchmarkIndexComments/doc10000-4       	       6	 176880693 ns/op	435723557 B/op	   20105 allocs/op
+BenchmarkIndexComments/doc10000-4       	       7	 157993751 ns/op	435723585 B/op	   20106 allocs/op
+BenchmarkAnalyze/long25-4               	     343	   3305063 ns/op	   2.47 MB/s	 2468455 B/op	   12061 allocs/op
+BenchmarkAnalyze/long25-4               	     354	   3563349 ns/op	   2.30 MB/s	 2468430 B/op	   12061 allocs/op
+BenchmarkAnalyze/long25-4               	     342	   3740304 ns/op	   2.19 MB/s	 2468445 B/op	   12061 allocs/op
+BenchmarkAnalyze/long100-4              	      75	  17166568 ns/op	   1.93 MB/s	10430372 B/op	   46586 allocs/op
+BenchmarkAnalyze/long100-4              	      75	  17466195 ns/op	   1.89 MB/s	10430402 B/op	   46586 allocs/op
+BenchmarkAnalyze/long100-4              	      84	  17523813 ns/op	   1.89 MB/s	10430398 B/op	   46586 allocs/op
+BenchmarkAnalyze/long400-4              	      14	  80535003 ns/op	   1.69 MB/s	44209768 B/op	  184222 allocs/op
+BenchmarkAnalyze/long400-4              	      16	  76210141 ns/op	   1.79 MB/s	44203753 B/op	  184221 allocs/op
+BenchmarkAnalyze/long400-4              	      15	  77475446 ns/op	   1.76 MB/s	44203910 B/op	  184223 allocs/op
+BenchmarkAnalyze/doc10-4                	   18510	     60730 ns/op	   4.46 MB/s	   51318 B/op	     453 allocs/op
+BenchmarkAnalyze/doc10-4                	   19539	     60309 ns/op	   4.49 MB/s	   51318 B/op	     453 allocs/op
+BenchmarkAnalyze/doc10-4                	   19092	     61568 ns/op	   4.40 MB/s	   51318 B/op	     453 allocs/op
+BenchmarkAnalyze/doc100-4               	    7464	    175852 ns/op	  13.82 MB/s	  176807 B/op	     657 allocs/op
+BenchmarkAnalyze/doc100-4               	    7417	    168141 ns/op	  14.46 MB/s	  176807 B/op	     657 allocs/op
+BenchmarkAnalyze/doc100-4               	    6285	    182235 ns/op	  13.34 MB/s	  176805 B/op	     657 allocs/op
+BenchmarkAnalyze/doc1000-4              	     342	   3729177 ns/op	   6.69 MB/s	 5309518 B/op	    2489 allocs/op
+BenchmarkAnalyze/doc1000-4              	     315	   3557274 ns/op	   7.01 MB/s	 5309523 B/op	    2489 allocs/op
+BenchmarkAnalyze/doc1000-4              	     330	   3427778 ns/op	   7.27 MB/s	 5309527 B/op	    2489 allocs/op
+BenchmarkAnalyze/doc10000-4             	       7	 177407509 ns/op	   1.46 MB/s	441059633 B/op	   20551 allocs/op
+BenchmarkAnalyze/doc10000-4             	       7	 165360822 ns/op	   1.57 MB/s	441059083 B/op	   20546 allocs/op
+BenchmarkAnalyze/doc10000-4             	       6	 179073596 ns/op	   1.45 MB/s	441059506 B/op	   20550 allocs/op
+## after
+BenchmarkIndexComments/long25-4         	    2676	    431052 ns/op	  504804 B/op	     859 allocs/op
+BenchmarkIndexComments/long25-4         	    2784	    474900 ns/op	  504802 B/op	     859 allocs/op
+BenchmarkIndexComments/long25-4         	    2852	    468780 ns/op	  504802 B/op	     859 allocs/op
+BenchmarkIndexComments/long100-4        	     495	   2104608 ns/op	 2220069 B/op	    3212 allocs/op
+BenchmarkIndexComments/long100-4        	     526	   2245135 ns/op	 2220068 B/op	    3212 allocs/op
+BenchmarkIndexComments/long100-4        	     523	   2205883 ns/op	 2220067 B/op	    3212 allocs/op
+BenchmarkIndexComments/long400-4        	     133	   8974124 ns/op	 9132614 B/op	   12574 allocs/op
+BenchmarkIndexComments/long400-4        	     135	   8926756 ns/op	 9132615 B/op	   12574 allocs/op
+BenchmarkIndexComments/long400-4        	     136	   8722169 ns/op	 9132610 B/op	   12574 allocs/op
+BenchmarkIndexComments/doc10-4          	  130681	      9284 ns/op	   11360 B/op	      51 allocs/op
+BenchmarkIndexComments/doc10-4          	  123598	      9247 ns/op	   11360 B/op	      51 allocs/op
+BenchmarkIndexComments/doc10-4          	  128932	      9607 ns/op	   11360 B/op	      51 allocs/op
+BenchmarkIndexComments/doc100-4         	   30405	     41055 ns/op	   57440 B/op	      66 allocs/op
+BenchmarkIndexComments/doc100-4         	   29958	     40421 ns/op	   57440 B/op	      66 allocs/op
+BenchmarkIndexComments/doc100-4         	   30645	     38869 ns/op	   57440 B/op	      66 allocs/op
+BenchmarkIndexComments/doc1000-4        	    3152	    368753 ns/op	  585189 B/op	      85 allocs/op
+BenchmarkIndexComments/doc1000-4        	    2948	    374480 ns/op	  585190 B/op	      85 allocs/op
+BenchmarkIndexComments/doc1000-4        	    3199	    364630 ns/op	  585189 B/op	      85 allocs/op
+BenchmarkIndexComments/doc10000-4       	     174	   6883090 ns/op	 7480706 B/op	     121 allocs/op
+BenchmarkIndexComments/doc10000-4       	     171	   7209304 ns/op	 7480701 B/op	     121 allocs/op
+BenchmarkIndexComments/doc10000-4       	     176	   7510185 ns/op	 7480708 B/op	     121 allocs/op
+BenchmarkAnalyze/long25-4               	     390	   3234965 ns/op	   2.53 MB/s	 2522851 B/op	   12119 allocs/op
+BenchmarkAnalyze/long25-4               	     400	   3287698 ns/op	   2.49 MB/s	 2522865 B/op	   12119 allocs/op
+BenchmarkAnalyze/long25-4               	     384	   3260338 ns/op	   2.51 MB/s	 2522811 B/op	   12119 allocs/op
+BenchmarkAnalyze/long100-4              	      82	  15887767 ns/op	   2.08 MB/s	10614916 B/op	   46795 allocs/op
+BenchmarkAnalyze/long100-4              	      73	  15776556 ns/op	   2.10 MB/s	10614864 B/op	   46794 allocs/op
+BenchmarkAnalyze/long100-4              	      68	  15941838 ns/op	   2.08 MB/s	10614774 B/op	   46794 allocs/op
+BenchmarkAnalyze/long400-4              	      19	  59282176 ns/op	   2.30 MB/s	44908506 B/op	  185029 allocs/op
+BenchmarkAnalyze/long400-4              	      19	  57658392 ns/op	   2.36 MB/s	44908448 B/op	  185029 allocs/op
+BenchmarkAnalyze/long400-4              	      19	  61574687 ns/op	   2.21 MB/s	44908751 B/op	  185031 allocs/op
+BenchmarkAnalyze/doc10-4                	   21452	     59301 ns/op	   4.57 MB/s	   51478 B/op	     441 allocs/op
+BenchmarkAnalyze/doc10-4                	   20192	     61657 ns/op	   4.40 MB/s	   51478 B/op	     441 allocs/op
+BenchmarkAnalyze/doc10-4                	   19942	     55475 ns/op	   4.89 MB/s	   51478 B/op	     441 allocs/op
+BenchmarkAnalyze/doc100-4               	    8797	    129001 ns/op	  18.84 MB/s	  136264 B/op	     468 allocs/op
+BenchmarkAnalyze/doc100-4               	    9690	    122112 ns/op	  19.91 MB/s	  136264 B/op	     468 allocs/op
+BenchmarkAnalyze/doc100-4               	   10000	    124348 ns/op	  19.55 MB/s	  136265 B/op	     468 allocs/op
+BenchmarkAnalyze/doc1000-4              	    1267	    872168 ns/op	  28.59 MB/s	 1052681 B/op	     500 allocs/op
+BenchmarkAnalyze/doc1000-4              	    1238	    916591 ns/op	  27.20 MB/s	 1052682 B/op	     500 allocs/op
+BenchmarkAnalyze/doc1000-4              	    1238	    912505 ns/op	  27.32 MB/s	 1052678 B/op	     500 allocs/op
+BenchmarkAnalyze/doc10000-4             	     100	  13711844 ns/op	  18.88 MB/s	12816672 B/op	     566 allocs/op
+BenchmarkAnalyze/doc10000-4             	      90	  13531327 ns/op	  19.14 MB/s	12816657 B/op	     565 allocs/op
+BenchmarkAnalyze/doc10000-4             	      92	  13105425 ns/op	  19.76 MB/s	12816644 B/op	     565 allocs/op
