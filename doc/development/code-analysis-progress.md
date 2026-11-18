@@ -19,7 +19,7 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 | P2 Source Range / Walk | 完了 | f862a3c |
 | P3 コメント関連付け・Doc | 完了 | 8f5e03d |
 | P4 意味解析クエリ | 完了 | 3c56133 |
-| P5 統合 API・JSON | 完了 | (P5 コミット) |
+| P5 統合 API・JSON | 完了 | 660eaee |
 
 ## P0 記録
 
@@ -240,3 +240,37 @@ ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィール
 - 未定義名は型推論器がエラーにしない（Unknown を推論する）ため、`status` は complete のまま参照が `unresolved` として出る。
   `status` は「解析が最後まで走ったか」を表し、プログラムの正しさは `references[].status` と `diagnostics` で見る。
 - 位置の単位は UTF-8 バイトだけを出す（LSP の UTF-16 変換は Go API の `source.File` で行う）。
+
+## 最終検証（P5 完了時点, HEAD 660eaee）
+
+- `go test -count=1 ./...`: 全パッケージ ok（cmd/les, analysis, ast, eval, benchcorpus, lexer, parser, source, types）。`-v` で RUN 910 件。
+- `go test -race -count=1 ./...`: 全パッケージ ok。
+- `go vet ./...`: 指摘なし。`git diff --check 94c06e6 HEAD`: 指摘なし。
+- gofmt: 変更・追加した .go ファイルはすべて整形済み。`pkg/eval/eval_test.go` と `pkg/parser/parser_test.go` は base の時点で gofmt 差分があり、無関係なので触っていない。
+- `go run ./cmd/les -v`（CI と同じ）: `les 0.1.198 (linux/amd64)`。
+
+### benchmark（通常経路、base と交互実行）
+
+base.txt 取得時と今とでホストの状態が違うため、P0 コミット（b99e0f6: ベンチのみ追加、本体コードは base と同一）と HEAD のテストバイナリを
+先にビルドし、交互に 8 ラウンド（count=2, benchtime=0.3s）実行して比較した。生データ: `doc/development/bench-final.txt`。
+
+| benchmark | ns/op（中央値 base → head / 揺れ） | B/op | allocs/op |
+|---|---|---|---|
+| Lex/few_comments | 31030 -> 30382 (-2.1% / 揺れ 23%) | 9794 -> 9793 (-0.0% / 揺れ 0%) | 221 -> 221 (+0.0% / 揺れ 0%) |
+| Lex/many_comments | 35595 -> 35083 (-1.4% / 揺れ 18%) | 13938 -> 13938 (+0.0% / 揺れ 0%) | 222 -> 222 (+0.0% / 揺れ 0%) |
+| Lex/unicode_layout | 10390 -> 10189 (-1.9% / 揺れ 32%) | 3096 -> 3096 (+0.0% / 揺れ 0%) | 75 -> 75 (+0.0% / 揺れ 0%) |
+| Lex/long200 | 1806099 -> 1777207 (-1.6% / 揺れ 27%) | 627326 -> 627326 (+0.0% / 揺れ 0%) | 12605 -> 12605 (+0.0% / 揺れ 0%) |
+| Parse/few_comments | 55061 -> 54470 (-1.1% / 揺れ 35%) | 21940 -> 21972 (+0.1% / 揺れ 0%) | 479 -> 479 (+0.0% / 揺れ 0%) |
+| Parse/many_comments | 58304 -> 62055 (+6.4% / 揺れ 22%) | 26101 -> 26133 (+0.1% / 揺れ 0%) | 481 -> 481 (+0.0% / 揺れ 0%) |
+| Parse/unicode_layout | 15424 -> 16592 (+7.6% / 揺れ 32%) | 7233 -> 7265 (+0.4% / 揺れ 0%) | 157 -> 157 (+0.0% / 揺れ 0%) |
+| Parse/long200 | 3057825 -> 3083900 (+0.9% / 揺れ 21%) | 1301336 -> 1301367 (+0.0% / 揺れ 0%) | 27610 -> 27610 (+0.0% / 揺れ 0%) |
+| ParseInfer/few_comments | 122428 -> 130024 (+6.2% / 揺れ 32%) | 72368 -> 72600 (+0.3% / 揺れ 0%) | 970 -> 970 (+0.0% / 揺れ 0%) |
+| ParseInfer/many_comments | 126532 -> 135404 (+7.0% / 揺れ 42%) | 76528 -> 76760 (+0.3% / 揺れ 0%) | 972 -> 972 (+0.0% / 揺れ 0%) |
+| ParseInfer/unicode_layout | 45742 -> 47662 (+4.2% / 揺れ 25%) | 36383 -> 36495 (+0.3% / 揺れ 0%) | 430 -> 430 (+0.0% / 揺れ 0%) |
+| ParseInfer/long200 | 6383450 -> 6628378 (+3.8% / 揺れ 27%) | 3393072 -> 3404357 (+0.3% / 揺れ 0%) | 45693 -> 45693 (+0.0% / 揺れ 0%) |
+
+- allocs/op はすべて不変。B/op は parser +32 B（Parser 構造体のフィールド追加）、ParseInfer +0.3%（Scope.origins と Inferencer.rec）。
+- ns/op は揺れ（18〜42%）より小さな差しか出ていない。ParseInfer は全入力で +4〜7% 側に寄ったため、ParseInfer だけ 12 ラウンドの
+  対応ありで再計測した: long200 は中央値比 1.002（12 回中 6 回 head が速い）、few_comments は 1.034（12 回中 3 回）。
+  大きな入力では差なし、小さな入力では 3% 前後の悪化の可能性を否定できない（5% の警戒値は下回る）。
+  通常経路で増えた処理は `inf.rec != nil` / `p.rt != nil` の分岐とトークン番号の加算だけで、追加の割り当てはない。
