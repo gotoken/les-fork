@@ -1,9 +1,12 @@
 # コードレビュー指摘 R1〜R5 への対応記録
 
-対象: `feature/code-analysis-api`（指摘時 HEAD 4d0d9b7）。既存コミットは書き換えず、指摘ごとに追加コミットで対応した。
+> この記録に書かれたコミットハッシュは、ブランチ `archive/code-analysis-api`（2026-11-18 の履歴書き換え後）のコミットを指す。
+> upstream への PR 用の `feature/code-analysis-api` は、`doc/development/` を除いて master 上に再構築したため、ハッシュが異なる。
+
+対象: `feature/code-analysis-api`（指摘時 HEAD 924b108）。既存コミットは書き換えず、指摘ごとに追加コミットで対応した。
 各項目の「再現」は、修正前のコードに対して新しいテストを実行し失敗することを確認したもの（修正ファイルだけを一時的に戻して実行）。
 
-## R1. Snapshot の不変性 — 妥当、修正済み（a52887d）
+## R1. Snapshot の不変性 — 妥当、修正済み（b99db5f）
 
 - 原因: `Symbol.NameSpan` / `DeclSpan` は `*source.Span` で、`Symbols()`・`Symbol()`・`SymbolAt()` が内部インデックスの
   ポインタをそのまま返していた。`Diagnostics()` はスライスはコピーしていたが `Span` ポインタは共有。`CommentIndex.Comments()` は内部スライスを返していた。
@@ -15,7 +18,7 @@
   （AST の深いコピーは費用に見合わないため）。
 - API の形（`*source.Span`）は変えていない。
 
-## R2. ファズテストの終了判定 — 妥当、修正済み（b020c91, a7f2d7b）
+## R2. ファズテストの終了判定 — 妥当、修正済み（af09624, dca107c）
 
 - 原因: 通常パースとメタデータ付きパースを同じ子プロセスで実行し、終わらなければ skip していたため、メタデータ経路だけの無限ループも skip された。
 - 対応: 子プロセスを分けた。通常パースが 2 秒以内に終わらない・panic する入力は既存の不具合として skip。通常パースが終わる入力で、
@@ -26,14 +29,14 @@
   「終わらない」と同じ扱いにした。
 - `go test ./pkg/parser -run '^$' -fuzz FuzzMetadataEquivalence -fuzztime 120s -parallel 3` で失敗なし。既存パーサーの不具合自体は未修正（指示どおり）。
 
-## R3. 組み込みシンボルの型 — 妥当、修正済み（b71fe46）
+## R3. 組み込みシンボルの型 — 妥当、修正済み（c981e26）
 
 - 原因: `semanticIndex.builtin()` は推論完了後のルートスコープから型を引いていた。トップレベルの宣言は組み込みと同じルートスコープに束縛されるため、
   `print("a")` の後に `print = 5` や `def print(...)` があると `builtin:print` の型が `Int` / `(Int) -> Int` になった。
 - 再現: `TestBuiltinTypeIgnoresShadowing`（3 パターン）。修正前は `builtin print typed "Int", want "(Show, ...) -> ()"` などで失敗。
 - 対応: 推論前にルートスコープを `Clone()` して保持し、組み込みの型はそこから引く。参照の状態（その時点で組み込みを指すか）は推論中の観測なので元々正しい。
 
-## R4. 名前解決と recorder の整合性 — 妥当、修正済み（af321dd）
+## R4. 名前解決と recorder の整合性 — 妥当、修正済み（78af830）
 
 - 調査: 識別子の解決（`noteIdent`/`resolveName`）は型推論器と同じスコープ連鎖・同じ束縛表を見ており整合。モジュールアクセスも推論器と同じ `inf.modules` を参照。
   一方、メンバー解決は recorder が独自の昇格規則（`memberDecl`）を持ち、次の 5 点で型推論器と食い違っていた。
@@ -49,9 +52,9 @@
   型推論器のメンバーアクセスと代入の分岐で、実際に使った探索の結果をそのまま記録する。`memberDecl`・`noteMember`・recorder の direct 表は削除。
   例外として、interface の Methods にコピーされた埋め込みメソッドの宣言元は、InterfaceDef のコピー順（埋め込み順で最初に持つもの）をたどって求める。
 - 意味論: 型推論の分岐順序・返す型・エラーは変えていない（`pkg/types` の全テスト、例題、メタデータ on/off と記録 on/off の等価性テストが通過）。
-  通常経路ベンチマーク（ParseInfer、4d0d9b7 との交互 8 ラウンド）: allocs/op・B/op 不変、ns/op は -7%〜+2%（揺れ 16〜26%）。
+  通常経路ベンチマーク（ParseInfer、924b108 との交互 8 ラウンド）: allocs/op・B/op 不変、ns/op は -7%〜+2%（揺れ 16〜26%）。
 
-## R5. 解析モードの性能 — 妥当、修正済み（5ae3b1a, 3801172）
+## R5. 解析モードの性能 — 妥当、修正済み（5235724, a3aecca）
 
 - ベンチマーク追加: `BenchmarkIndexComments`（関連付けと doc 抽出のみ）と `BenchmarkAnalyze`（解析全体）。入力はプログラム規模（`Long` 25/100/400 ブロック）と、
   1 宣言に 10〜10000 行の doc コメント。生データ: `doc/development/bench-analysis.txt`。
