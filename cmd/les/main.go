@@ -111,6 +111,7 @@ func main() {
 	syntaxOnly := flag.Bool("c", false, "check syntax only")
 	typeOnly := flag.Bool("t", false, "check syntax and types only")
 	inlineCode := flag.String("e", "", "evaluate inline script")
+	analyzeJSON := flag.Bool("analyze-json", false, "analyze without running and print JSON")
 
 	flag.Usage = func() {
 		fmt.Println("Les - Lazy Evaluation Script interpreter")
@@ -121,9 +122,25 @@ func main() {
 		fmt.Println("  -c         check syntax only")
 		fmt.Println("  -t         check syntax and types only")
 		fmt.Println("  -e <code>  evaluate inline script")
+		fmt.Println("  --analyze-json [file.les | -]")
+		fmt.Println("             analyze without running (comments, ranges, symbols,")
+		fmt.Println("             references, types) and print JSON (schema version 1)")
 	}
 
 	flag.Parse()
+
+	if *analyzeJSON {
+		req := analyzeRequest{inline: *inlineCode, args: flag.Args()}
+		flag.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "e":
+				req.hasInline = true
+			case "v", "c", "t":
+				req.conflicts = append(req.conflicts, "-"+f.Name)
+			}
+		})
+		os.Exit(runAnalyzeJSON(req, os.Stdin, os.Stdout, os.Stderr))
+	}
 
 	if *showVersion {
 		fmt.Printf("les %s (%s)\n", getVersion(), getPlatform())

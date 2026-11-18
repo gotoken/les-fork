@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "status": "partial",
+  "semanticStatus": "partial",
+  "unit": "utf8-byte",
+  "files": [
+    {
+      "uri": "testdata/analyze/import_missing.les",
+      "size": 39,
+      "lines": 4
+    }
+  ],
+  "comments": [],
+  "symbols": [],
+  "references": [],
+  "types": [],
+  "diagnostics": [
+    {
+      "severity": "error",
+      "origin": "type",
+      "message": "testdata/analyze/import_missing.les:1: module file not found: 'mymath.les' or 'mymath/module.les' at col 1",
+      "range": {
+        "file": "testdata/analyze/import_missing.les",
+        "start": 0,
+        "end": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# A point on the plane.
+struct Point:
+    x: Int = 0  # horizontal
+    y: Int = 0
+
+    # Squared distance from the origin.
+    def DistSq() -> Int:
+        x * x + y * y
+
+# Adds one to n.
+def inc(n: Int) -> Int:
+    n + 1
+
+p = Point(x: 3, y: 4)
+print(inc(p.DistSq()))

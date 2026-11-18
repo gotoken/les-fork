@@ -136,8 +136,10 @@ type Diagnostic struct {
 	Origin  string
 	Message string
 	// Span locates the problem when the reporter gave a position: syntax
-	// errors and type warnings carry one. Type errors are reported by the
-	// type checker as text only and have no span; no range is guessed.
+	// errors and type warnings carry one. A type error carries a zero-width
+	// span when the checker's message has the exact "<URI>:<line>: ... at
+	// col <col>" shape for this file; otherwise (an error in an imported
+	// module, or no position) it has none.
 	Span *source.Span
 }
 
