@@ -241,7 +241,7 @@ ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィール
   `status` は「解析が最後まで走ったか」を表し、プログラムの正しさは `references[].status` と `diagnostics` で見る。
 - 位置の単位は UTF-8 バイトだけを出す（LSP の UTF-16 変換は Go API の `source.File` で行う）。
 
-## 最終検証（P5 完了時点, HEAD 660eaee）
+## 最終検証（P5 完了時点 660eaee。ファズ・並行テスト追加後の 324a7d0 で test / race / vet / diff --check を再実行し全て通過）
 
 - `go test -count=1 ./...`: 全パッケージ ok（cmd/les, analysis, ast, eval, benchcorpus, lexer, parser, source, types）。`-v` で RUN 910 件。
 - `go test -race -count=1 ./...`: 全パッケージ ok。
