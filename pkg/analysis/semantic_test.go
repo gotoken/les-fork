@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -54,30 +55,9 @@ func refLines(t *testing.T, s *Snapshot, id SymbolID) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, strings.Join([]string{itoa(l) + ":" + itoa(c), r.Kind}, " "))
+		out = append(out, strings.Join([]string{strconv.Itoa(l) + ":" + strconv.Itoa(c), r.Kind}, " "))
 	}
 	return out
-}
-
-func itoa(i int) string { return strings.TrimSpace(strings.Repeat(" ", 0) + func() string { return fmtInt(i) }()) }
-
-func fmtInt(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	if neg {
-		return "-" + string(b)
-	}
-	return string(b)
 }
 
 func expectRefs(t *testing.T, s *Snapshot, sym Symbol, want ...string) {
@@ -390,8 +370,11 @@ func TestTypeErrorIsPartial(t *testing.T) {
 	for _, d := range s.Diagnostics() {
 		if d.Origin == "type" && d.Severity == SeverityError {
 			typeDiag = true
-			if d.Span != nil {
-				t.Error("type errors carry no guessed span")
+			// The span is recovered from the checker's "<uri>:<line>: ... at
+			// col <col>" text; it points at the start of the failing
+			// statement on line 2.
+			if d.Span == nil || d.Span.Start != strings.Index(src, "b:") {
+				t.Errorf("type error span: %+v", d.Span)
 			}
 		}
 	}
@@ -573,5 +556,25 @@ func TestDeterministicIDs(t *testing.T) {
 	b := analyze(t, src).Symbols()
 	if !reflect.DeepEqual(a, b) {
 		t.Fatal("symbols differ between runs")
+	}
+}
+
+func TestTypeErrorSpanOnlyForThisFile(t *testing.T) {
+	s := analyze(t, "a = 1\nb = 2\n")
+	uri := s.URI()
+	for _, c := range []struct {
+		msg  string
+		want int // -1: no span
+	}{
+		{uri + ":2: boom at col 1", 6},
+		{"other.les:2: boom at col 1", -1},
+		{uri + ": boom", -1},
+		{uri + ":9: boom at col 1", -1},
+		{uri + ":2: boom", -1},
+	} {
+		sp := s.typeErrorSpan(c.msg)
+		if (sp == nil) != (c.want < 0) || (sp != nil && sp.Start != c.want) {
+			t.Errorf("%q: got %+v, want %d", c.msg, sp, c.want)
+		}
 	}
 }

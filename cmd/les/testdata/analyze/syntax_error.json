@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "status": "partial",
+  "semanticStatus": "not-run",
+  "unit": "utf8-byte",
+  "files": [
+    {
+      "uri": "testdata/analyze/syntax_error.les",
+      "size": 48,
+      "lines": 4
+    }
+  ],
+  "comments": [
+    {
+      "range": {
+        "file": "testdata/analyze/syntax_error.les",
+        "start": 0,
+        "end": 20
+      },
+      "text": "# Broken on purpose.",
+      "relation": "leading",
+      "anchor": {
+        "kind": "FuncDef",
+        "range": {
+          "file": "testdata/analyze/syntax_error.les",
+          "start": 21,
+          "end": 47
+        }
+      }
+    }
+  ],
+  "symbols": [],
+  "references": [],
+  "types": [],
+  "diagnostics": [
+    {
+      "severity": "error",
+      "origin": "syntax",
+      "message": "testdata/analyze/syntax_error.les:2: expected ')', got ':' at col 20",
+      "range": {
+        "file": "testdata/analyze/syntax_error.les",
+        "start": 40,
+        "end": 40
+      }
+    }
+  ]
+}

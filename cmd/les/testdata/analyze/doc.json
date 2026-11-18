@@ -1,0 +1,562 @@
+{
+  "schemaVersion": 1,
+  "status": "complete",
+  "semanticStatus": "complete",
+  "unit": "utf8-byte",
+  "files": [
+    {
+      "uri": "testdata/analyze/doc.les",
+      "size": 268,
+      "lines": 16
+    }
+  ],
+  "comments": [
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 0,
+        "end": 23
+      },
+      "text": "# A point on the plane.",
+      "relation": "leading",
+      "anchor": {
+        "kind": "StructDef",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 24,
+          "end": 169
+        }
+      }
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 54,
+        "end": 66
+      },
+      "text": "# horizontal",
+      "relation": "trailing",
+      "anchor": {
+        "kind": "StructDef.field",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 42,
+          "end": 52
+        }
+      }
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 87,
+        "end": 122
+      },
+      "text": "# Squared distance from the origin.",
+      "relation": "leading",
+      "anchor": {
+        "kind": "FuncDef",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 127,
+          "end": 169
+        }
+      }
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 171,
+        "end": 187
+      },
+      "text": "# Adds one to n.",
+      "relation": "leading",
+      "anchor": {
+        "kind": "FuncDef",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 188,
+          "end": 221
+        }
+      }
+    }
+  ],
+  "symbols": [
+    {
+      "id": "s1",
+      "name": "Point",
+      "kind": "struct",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 31,
+        "end": 36
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 24,
+        "end": 169
+      },
+      "type": {
+        "text": "Point",
+        "known": true
+      },
+      "documentation": {
+        "text": "A point on the plane.",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 0,
+          "end": 23
+        }
+      }
+    },
+    {
+      "id": "s2",
+      "name": "x",
+      "kind": "field",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 42,
+        "end": 43
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 42,
+        "end": 52
+      },
+      "container": "s1",
+      "type": {
+        "text": "Int",
+        "known": true
+      },
+      "annotation": "Int"
+    },
+    {
+      "id": "s3",
+      "name": "y",
+      "kind": "field",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 71,
+        "end": 72
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 71,
+        "end": 81
+      },
+      "container": "s1",
+      "type": {
+        "text": "Int",
+        "known": true
+      },
+      "annotation": "Int"
+    },
+    {
+      "id": "s4",
+      "name": "DistSq",
+      "kind": "method",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 131,
+        "end": 137
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 127,
+        "end": 169
+      },
+      "container": "s1",
+      "type": {
+        "text": "() -> Int",
+        "known": true
+      },
+      "annotation": "Int",
+      "documentation": {
+        "text": "Squared distance from the origin.",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 87,
+          "end": 122
+        }
+      }
+    },
+    {
+      "id": "s5",
+      "name": "inc",
+      "kind": "function",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 192,
+        "end": 195
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 188,
+        "end": 221
+      },
+      "type": {
+        "text": "(Int) -> Int",
+        "known": true
+      },
+      "annotation": "Int",
+      "documentation": {
+        "text": "Adds one to n.",
+        "range": {
+          "file": "testdata/analyze/doc.les",
+          "start": 171,
+          "end": 187
+        }
+      }
+    },
+    {
+      "id": "s6",
+      "name": "n",
+      "kind": "parameter",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 196,
+        "end": 197
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 196,
+        "end": 197
+      },
+      "type": {
+        "text": "Int",
+        "known": true
+      },
+      "annotation": "Int"
+    },
+    {
+      "id": "s7",
+      "name": "p",
+      "kind": "variable",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 223,
+        "end": 224
+      },
+      "declRange": {
+        "file": "testdata/analyze/doc.les",
+        "start": 223,
+        "end": 244
+      },
+      "type": {
+        "text": "Point",
+        "known": true
+      }
+    },
+    {
+      "id": "builtin:print",
+      "name": "print",
+      "kind": "builtin",
+      "origin": "builtin",
+      "type": {
+        "text": "(Show, ...) -> ()",
+        "known": true
+      }
+    }
+  ],
+  "references": [
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 156,
+        "end": 157
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s2"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 160,
+        "end": 161
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s2"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 164,
+        "end": 165
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s3"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 168,
+        "end": 169
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s3"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 216,
+        "end": 217
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s6"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 227,
+        "end": 232
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s1"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 245,
+        "end": 250
+      },
+      "kind": "read",
+      "status": "builtin",
+      "symbol": "builtin:print",
+      "detail": "print"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 251,
+        "end": 254
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s5"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 255,
+        "end": 256
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s7"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 257,
+        "end": 263
+      },
+      "kind": "member",
+      "status": "resolved",
+      "symbol": "s4"
+    }
+  ],
+  "types": [
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 156,
+        "end": 169
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 156,
+        "end": 161
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 156,
+        "end": 157
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 160,
+        "end": 161
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 164,
+        "end": 169
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 164,
+        "end": 165
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 168,
+        "end": 169
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 216,
+        "end": 221
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 216,
+        "end": 217
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 220,
+        "end": 221
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 227,
+        "end": 244
+      },
+      "type": "Point",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 227,
+        "end": 232
+      },
+      "type": "Point",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 236,
+        "end": 237
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 242,
+        "end": 243
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 245,
+        "end": 267
+      },
+      "type": "()",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 245,
+        "end": 250
+      },
+      "type": "(Show, ...) -> ()",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 251,
+        "end": 266
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 251,
+        "end": 254
+      },
+      "type": "(Int) -> Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 255,
+        "end": 265
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 255,
+        "end": 263
+      },
+      "type": "() -> Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/doc.les",
+        "start": 255,
+        "end": 256
+      },
+      "type": "Point",
+      "known": true
+    }
+  ],
+  "diagnostics": []
+}

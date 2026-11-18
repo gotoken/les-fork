@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"les/pkg/ast"
 	"les/pkg/parser"
@@ -207,7 +208,8 @@ func (s *Snapshot) runSemantic(input Input) {
 		}
 	}
 	if err := inf.InferProgram(prog); err != nil {
-		s.diags = append(s.diags, Diagnostic{Severity: SeverityError, Origin: "type", Message: err.Error()})
+		s.diags = append(s.diags, Diagnostic{Severity: SeverityError, Origin: "type", Message: err.Error(),
+			Span: s.typeErrorSpan(err.Error())})
 		s.semState = SemanticPartial
 	}
 	for _, w := range inf.Warnings() {
@@ -218,6 +220,35 @@ func (s *Snapshot) runSemantic(input Input) {
 		s.diags = append(s.diags, Diagnostic{Severity: SeverityWarning, Origin: "type", Message: w.String(), Span: sp})
 	}
 	s.sem = s.buildIndex(inf, rec, annots, params, tparams)
+}
+
+// typeErrorSpan recovers the position of a type error in this file. The type
+// checker reports errors as text ("<file>:<line>: <message> at col <col>");
+// only that exact shape with this snapshot's URI is accepted, so errors
+// located in imported modules or without a position get no span.
+func (s *Snapshot) typeErrorSpan(msg string) *source.Span {
+	rest, ok := strings.CutPrefix(msg, s.uri+":")
+	if !ok {
+		return nil
+	}
+	lineText, rest, ok := strings.Cut(rest, ": ")
+	if !ok {
+		return nil
+	}
+	i := strings.LastIndex(rest, " at col ")
+	if i < 0 {
+		return nil
+	}
+	line, err1 := strconv.Atoi(lineText)
+	col, err2 := strconv.Atoi(rest[i+len(" at col "):])
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	off, err := s.file.Offset(line, col)
+	if err != nil {
+		return nil
+	}
+	return &source.Span{Start: off, End: off}
 }
 
 func typeText(t types.Type) (string, bool) {

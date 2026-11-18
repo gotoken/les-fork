@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "status": "partial",
+  "semanticStatus": "partial",
+  "unit": "utf8-byte",
+  "files": [
+    {
+      "uri": "testdata/analyze/type_error.les",
+      "size": 65,
+      "lines": 6
+    }
+  ],
+  "comments": [],
+  "symbols": [
+    {
+      "id": "s1",
+      "name": "twice",
+      "kind": "function",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 4,
+        "end": 9
+      },
+      "declRange": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 0,
+        "end": 35
+      },
+      "type": {
+        "text": "(Int) -> Int",
+        "known": true
+      },
+      "annotation": "Int"
+    },
+    {
+      "id": "s2",
+      "name": "n",
+      "kind": "parameter",
+      "origin": "source",
+      "nameRange": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 10,
+        "end": 11
+      },
+      "declRange": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 10,
+        "end": 11
+      },
+      "type": {
+        "text": "Int",
+        "known": true
+      },
+      "annotation": "Int"
+    },
+    {
+      "id": "builtin:print",
+      "name": "print",
+      "kind": "builtin",
+      "origin": "builtin",
+      "type": {
+        "text": "(Show, ...) -> ()",
+        "known": true
+      }
+    }
+  ],
+  "references": [
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 30,
+        "end": 31
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s2"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 37,
+        "end": 42
+      },
+      "kind": "read",
+      "status": "builtin",
+      "symbol": "builtin:print",
+      "detail": "print"
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 43,
+        "end": 48
+      },
+      "kind": "read",
+      "status": "resolved",
+      "symbol": "s1"
+    }
+  ],
+  "types": [
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 30,
+        "end": 35
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 30,
+        "end": 31
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 34,
+        "end": 35
+      },
+      "type": "Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 37,
+        "end": 42
+      },
+      "type": "(Show, ...) -> ()",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 43,
+        "end": 48
+      },
+      "type": "(Int) -> Int",
+      "known": true
+    },
+    {
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 49,
+        "end": 52
+      },
+      "type": "String",
+      "known": true
+    }
+  ],
+  "diagnostics": [
+    {
+      "severity": "error",
+      "origin": "type",
+      "message": "testdata/analyze/type_error.les:4: type mismatch in argument 1: expected Int, got String at col 13",
+      "range": {
+        "file": "testdata/analyze/type_error.les",
+        "start": 49,
+        "end": 49
+      }
+    }
+  ]
+}

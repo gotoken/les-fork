@@ -18,8 +18,8 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 | P1 コメント保持 | 完了（Issue #23 の範囲） | 8529d12 |
 | P2 Source Range / Walk | 完了 | f862a3c |
 | P3 コメント関連付け・Doc | 完了 | 8f5e03d |
-| P4 意味解析クエリ | 完了 | (P4 コミット) |
-| P5 統合 API・JSON | 未着手 | |
+| P4 意味解析クエリ | 完了 | 3c56133 |
+| P5 統合 API・JSON | 完了 | (P5 コミット) |
 
 ## P0 記録
 
@@ -186,7 +186,7 @@ Parse: allocs/op 不変、B/op +32（Parser 構造体のフィールド追加）
 - 型は型推論器の `String()` をそのまま使い、Unknown/型変数は `TypeKnown=false`。注釈は推論前に記録した「書かれた注釈」（型推論器が do-block 引数の
   `TypeAnnot` に推論型を書き込む既存挙動があるため）。
 - 状態: 構文エラー→意味解析は `not-run`。型エラーで推論が止まると `partial`（以降の参照は欠落し、`References().Complete=false`）。
-  型エラーは文字列しか得られないため span は推測せず nil。警告と構文エラーは位置付き。
+  型エラーは文字列しか得られないため、P4 時点では span を nil とした（P5 で、自ファイルの `<URI>:<行>: ... at col <列>` 形式に厳密一致する場合のみゼロ幅 span を付けるよう変更）。警告と構文エラーは位置付き。
 - モジュール: `DirResolver(dir)` は `os.OpenRoot` で root 外（`..`、絶対パス、symlink 脱出）を拒否する `types.FSModuleLoader` を使う。
   resolver なしの場合はユーザーモジュールを読まず warning＋partial。`mod::X` のメンバーは external（別モジュールのデータは snapshot に入れない）。
   `types.FileModuleLoader.Load` は共通部分を `compileModule` に切り出しただけで挙動は同一。
@@ -210,3 +210,33 @@ lambda/do-block/match as/tuple pattern/unpack、型の絞り込みで同一性�
 ### benchmark（通常経路, count=6）
 
 ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィールド追加）、ns/op -9%〜+1%（揺れの範囲内）。
+
+## P5 記録（統合 API と JSON CLI）
+
+### Go API
+
+- 統合 API は P4 までの `analysis.Analyze` / `Snapshot` そのもの。P5 で `(*Snapshot).WriteJSON` と `WriteFailedJSON`、`SchemaVersion = 1` を追加。
+- 実行可能な `Example`（`pkg/analysis/example_test.go`）: doc・型・定義・参照・位置の型を一度の解析で問い合わせる。
+- 型エラーの span: 型推論器のエラーは文字列のみなので、`<URI>:<行>: ... at col <列>` に厳密一致し、かつ URI が自ファイルの場合だけゼロ幅 span を付ける
+  （import 先モジュールのエラーや位置なしのエラーには付けない）。単体テストで不一致パターンを確認。
+
+### CLI（`les --analyze-json`）
+
+- スキーマ: [code-analysis-json-v1.md](code-analysis-json-v1.md)。オフセットは UTF-8 バイト・半開区間、配列は null にしない、出力は決定的。
+- 入力: ファイル / `-` / 引数なし（stdin）/ `-e <code>`。`-c` `-t` `-v` との併用、2 つ以上のファイル、`-e` とファイルの併用は usage error。
+- 終了コード: 0 complete、1 partial（JSON は出す）、2 usage error（stdout 空）、3 読み込み失敗（`status: "failed"` の JSON）。
+- import は対象ファイルのディレクトリ（stdin/-e はカレント）から `DirResolver`（`os.OpenRoot`）でのみ読む。絶対パス入力では URI をベース名にしてディレクトリ構成を出さない。
+- 評価器は一切呼ばない。`print`/`exit(7)` を含むプログラムを main() 経由（テストバイナリを再実行）で解析し、出力も終了コードも出ないことを確認。
+  同じプログラムを通常モードで実行すると exit 7 になることも同テスト内で確認（ハーネスが本当に main を通っている証拠）。
+
+### テスト
+
+- `cmd/les/analyze_test.go`: golden（complete / 未解決名 / 型エラー / import 失敗 / 構文エラー、`-update` で再生成）、E2E（doc・型・定義・参照・呼び出し式の型）、
+  決定性、examples/main_import.les の import 解決、絶対パスの URI、usage error、読み込み失敗、サブプロセスでの stdin / `-e` / 併用エラー / 非実行。
+- `pkg/analysis/jsonv1_test.go`: コーパス全体で全 range がファイル内に収まること・3 回の出力が byte 一致、層を絞った時の空配列、HTML エスケープなし、failed 文書。
+
+### 判断メモ
+
+- 未定義名は型推論器がエラーにしない（Unknown を推論する）ため、`status` は complete のまま参照が `unresolved` として出る。
+  `status` は「解析が最後まで走ったか」を表し、プログラムの正しさは `references[].status` と `diagnostics` で見る。
+- 位置の単位は UTF-8 バイトだけを出す（LSP の UTF-16 変換は Go API の `source.File` で行う）。

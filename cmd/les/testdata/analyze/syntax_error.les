@@ -1,0 +1,3 @@
+# Broken on purpose.
+def f(n: Int -> Int:
+    n
