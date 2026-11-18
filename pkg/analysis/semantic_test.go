@@ -578,3 +578,29 @@ func TestTypeErrorSpanOnlyForThisFile(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinTypeIgnoresShadowing: a top-level declaration may rebind a
+// builtin's name in the root scope; the builtin symbol keeps the builtin's
+// type (review R3).
+func TestBuiltinTypeIgnoresShadowing(t *testing.T) {
+	ref := analyze(t, "print(\"a\")\n")
+	want, ok := ref.Symbol("builtin:print")
+	if !ok || want.Type == "" || want.Type == "Int" {
+		t.Fatalf("builtin print without shadowing: %+v", want)
+	}
+	for _, src := range []string{
+		"print(\"a\")\nprint = 5\n",
+		"print(\"a\")\ndef print(x: Int) -> Int:\n    x\n",
+		"def f() -> Int:\n    print(\"a\")\n    1\nprint = 5\n",
+	} {
+		s := analyze(t, src)
+		got, ok := s.Symbol("builtin:print")
+		if !ok || got.Type != want.Type || got.TypeKnown != want.TypeKnown {
+			t.Errorf("%q: builtin print typed %q, want %q", src, got.Type, want.Type)
+		}
+		hit := s.SymbolAt(0)
+		if src[0] == 'p' && (!hit.Found || hit.Symbol.ID != "builtin:print" || hit.Status != RefBuiltin) {
+			t.Errorf("%q: first print should be the builtin: %+v", src, hit)
+		}
+	}
+}

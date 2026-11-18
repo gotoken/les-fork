@@ -222,6 +222,10 @@ func (s *Snapshot) runSemantic(input Input) {
 			}
 		}
 	}
+	// The predeclared names as they are before the program runs: a
+	// top-level declaration may rebind a builtin's name in the same root
+	// scope, and the builtin's type must not be read from that binding.
+	predeclared := inf.Scope().Clone()
 	if err := inf.InferProgram(prog); err != nil {
 		s.diags = append(s.diags, Diagnostic{Severity: SeverityError, Origin: "type", Message: err.Error(),
 			Span: s.typeErrorSpan(err.Error())})
@@ -234,7 +238,7 @@ func (s *Snapshot) runSemantic(input Input) {
 		}
 		s.diags = append(s.diags, Diagnostic{Severity: SeverityWarning, Origin: "type", Message: w.String(), Span: sp})
 	}
-	s.sem = s.buildIndex(inf, rec, annots, params, tparams)
+	s.sem = s.buildIndex(inf, rec, predeclared, annots, params, tparams)
 }
 
 // typeErrorSpan recovers the position of a type error in this file. The type
@@ -294,7 +298,7 @@ func (s *Snapshot) nodeSpan(n ast.Node) *source.Span {
 	return nil
 }
 
-func (s *Snapshot) buildIndex(inf *types.Inferencer, rec *types.Recorder, annots map[*ast.FuncParam]string,
+func (s *Snapshot) buildIndex(inf *types.Inferencer, rec *types.Recorder, predeclared *types.Scope, annots map[*ast.FuncParam]string,
 	params map[*ast.FuncParam]paramOwner, tparams map[*ast.TypeParam]typeParamOwner) *semanticIndex {
 	idx := &semanticIndex{inf: inf, rec: rec, byID: map[SymbolID]*symEntry{}, byDecl: map[int]*symEntry{},
 		builtins: map[string]*symEntry{}, annots: annots}
@@ -421,7 +425,7 @@ func (s *Snapshot) buildIndex(inf *types.Inferencer, rec *types.Recorder, annots
 			}
 		case types.Builtin:
 			if rk.Kind == types.RefIdent || rk.Kind == types.RefModule {
-				ref.Symbol = idx.builtin(r.Detail, inf).sym.ID
+				ref.Symbol = idx.builtin(r.Detail, predeclared).sym.ID
 			}
 		}
 		idx.refs = append(idx.refs, ref)
@@ -455,12 +459,14 @@ func refKindName(k types.RefKind) string {
 	}
 }
 
-func (idx *semanticIndex) builtin(name string, inf *types.Inferencer) *symEntry {
+// builtin returns the symbol of a predeclared name, typed from the scope as
+// it was before type checking.
+func (idx *semanticIndex) builtin(name string, predeclared *types.Scope) *symEntry {
 	if e, ok := idx.builtins[name]; ok {
 		return e
 	}
 	e := &symEntry{decl: -1, sym: Symbol{ID: SymbolID("builtin:" + name), Name: name, Kind: "builtin", Origin: OriginBuiltin}}
-	if t, ok := inf.Scope().Lookup(name); ok {
+	if t, ok := predeclared.Lookup(name); ok {
 		e.sym.Type, e.sym.TypeKnown = typeText(t)
 	}
 	idx.builtins[name] = e
