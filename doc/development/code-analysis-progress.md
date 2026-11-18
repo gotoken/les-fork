@@ -16,8 +16,8 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 |---|---|---|
 | P0 現状調査・ベースライン | 完了 | b99e0f6 |
 | P1 コメント保持 | 完了（Issue #23 の範囲） | 8529d12 |
-| P2 Source Range / Walk | 完了 | (P2 コミット) |
-| P3 コメント関連付け・Doc | 未着手 | |
+| P2 Source Range / Walk | 完了 | f862a3c |
+| P3 コメント関連付け・Doc | 完了 | (P3 コミット) |
 | P4 意味解析クエリ | 未着手 | |
 | P5 統合 API・JSON | 未着手 | |
 
@@ -151,3 +151,13 @@ Walk はメタデータを訪問しない。struct はフィールド→メソ�
 
 Parse: allocs/op 不変、B/op +32（Parser 構造体のフィールド追加）。ns/op は -3%〜+6%（基準揺れ 10–18% 以内）。
 詳細収集時（`BenchmarkParseMetadata`）は few_comments 151µs/126KB/572 allocs、long200 15ms/10MB/27998 allocs（通常の約 3–5 倍）。
+
+## P3 記録（コメント関連付けと Documentation）
+
+- `pkg/analysis/comments.go`: `IndexComments(*parser.Result) (*CommentIndex, error)`（Comments+Ranges 必須）。
+  三層（原コメント列 / 構文関連付け leading・trailing・internal・unattached / 文書）を区別。原コメント列が正で、関連付けは導出・再計算可能。
+- 規約は `doc/development/code-analysis-doc-comments.md`（言語仕様ではなくツール規約 v1）。
+- 判断: インデントはタブ/空白を換算せず先頭空白文字列の完全一致で比較（混在は unattached。推定しない）。
+  宣言が行頭にない場合（`x = 1; y = 2` の y）は文書なし。再束縛の除外は意味解析が必要なので P4 の symbol 単位で確定。
+- テスト: 宣言種別ごと（var/struct/field/method/interface/method sig/module）、連続行・`#` だけの行、空行、別階層、行頭でない宣言、
+  同名の入れ子関数、trailing/internal/unattached、行継続、括弧内、EOF、CRLF、メタデータ不足時のエラー。
