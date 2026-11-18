@@ -14,8 +14,8 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 
 | Phase | 状態 | コミット |
 |---|---|---|
-| P0 現状調査・ベースライン | 完了 | (benchmark 追加コミット) |
-| P1 コメント保持 | 未着手 | |
+| P0 現状調査・ベースライン | 完了 | b99e0f6 |
+| P1 コメント保持 | 完了（Issue #23 の範囲） | (P1 コミット) |
 | P2 Source Range / Walk | 未着手 | |
 | P3 コメント関連付け・Doc | 未着手 | |
 | P4 意味解析クエリ | 未着手 | |
@@ -78,3 +78,20 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 - メタデータ収集は lexer/parser に nil チェックの分岐のみを追加し、通常経路で新たな割り当てをしない。
 - `Clone()` したレキサーは記録しない（コレクタを外す）。
 - 範囲の終端は「構文関数が実際に消費した最後の実トークン」で決める。中置ノードは子の範囲と合併して開始位置を求める。
+
+## P1 記録（コメント保持 / Issue #23 の実装範囲）
+
+- 新設 `pkg/source`: `Span`（UTF-8 byte, 半開区間）、`Comment{Span, Text}`、`File`（行列・UTF-16 変換）。
+- `pkg/lexer`: `NewLexerWithOptions(src, Options{Comments, Tokens})` と `Metadata()`。既存 `NewLexer` は記録しない。
+  コメント消費 4 箇所を `skipComment()` に共通化（ループ本体は同一）。`+;` の先読みは改行を実際に消費する分岐でのみ記録。
+  `Clone()` は `rec = nil` にするため投機的走査は記録されない（重複除去に頼らない）。
+  コメント本文は `#` を含み、`\n` と直前の `\r`（および入力末尾の `\r`）を含まない。`Text == src[Span]`。
+- `pkg/parser`: `Parse(src, Options{Filename, Comments}) *Result{Program, Errors, Metadata}`。
+  `Metadata{File, Comments, Diagnostics}`。`Diagnostics` は `addError` の行・列・本文をそのまま構造化（推測範囲は作らない）。
+  ゼロ値 Options は従来経路と同一処理で Metadata は nil。
+- テスト: lexer 25 ケースのコメント内容・範囲・順序・一意性、on/off でのトークン列一致、Clone 非記録、トークン span。
+  parser: 正常/異常/例題/benchmark コーパスで on/off の AST `reflect.DeepEqual`、エラー文字列一致、
+  型検査（エラー・警告）と評価出力・評価エラーの一致。
+- benchmark（count=6、通常経路）: allocs/op は全項目不変。Parser の B/op が +16（Parser 構造体へのフィールド追加 2 つ。割り当て回数は同じ）。
+  ns/op の差は -7%〜+7% で基準の揺れ（7–18%）以内。
+- Issue #23 の範囲はこのコミットで完了扱い（Issue は自動 close しない）。
