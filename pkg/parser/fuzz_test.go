@@ -19,12 +19,14 @@ import (
 // comments and ranges never changes the AST or the syntax errors, and that
 // every recorded range lies inside the file. Inputs on which the plain
 // parser itself panics are skipped: those are existing parser behavior, not
-// caused by metadata collection. Each input is first parsed in a child
-// process with a time limit, and skipped if that does not finish: the
+// caused by metadata collection. Each input is first parsed plainly in a
+// child process with a time limit, and skipped if that does not finish: the
 // existing parser loops forever, allocating, on some inputs (for example
 // "t:(" or "match v:\n    case [\n"; see
 // doc/development/code-analysis-progress.md, final verification), and a
-// stuck parse cannot be stopped from inside the test process.
+// stuck parse cannot be stopped from inside the test process. Parsing with
+// metadata is then checked in its own child process: if it does not finish
+// (or panics) where the plain parse did not, the test fails.
 //
 //	go test ./pkg/parser -run '^$' -fuzz FuzzMetadataEquivalence -fuzztime 60s
 func FuzzMetadataEquivalence(f *testing.F) {
@@ -47,8 +49,23 @@ func FuzzMetadataEquivalence(f *testing.F) {
 			plainErrs []string
 			panicked  bool
 		)
-		if !terminatesInChild(t, src) {
-			t.Skip("the parser does not finish on this input (existing behavior)")
+		// Plain and metadata parsing are checked for termination in
+		// separate child processes, so a loop introduced by metadata
+		// collection is a failure, not a skip.
+		plain, elapsed := parseInChild(t, src, childPlain, 2*time.Second)
+		switch plain {
+		case childTimeout:
+			t.Skip("the plain parser does not finish on this input (existing behavior)")
+		case childPanic:
+			t.Skip("the plain parser panics on this input (existing behavior)")
+		}
+		// Metadata parsing is a few times slower; allow generously more.
+		limit := max(10*time.Second, 10*elapsed)
+		switch meta, _ := parseInChild(t, src, childMetadata, limit); meta {
+		case childTimeout:
+			t.Fatalf("parsing with metadata does not finish within %v, but the plain parse does (in %v)", limit, elapsed)
+		case childPanic:
+			t.Fatal("parsing with metadata panics, but the plain parse does not")
 		}
 		func() {
 			defer func() {
@@ -89,25 +106,52 @@ func FuzzMetadataEquivalence(f *testing.F) {
 	})
 }
 
-const childEnv = "LES_PARSE_CHILD_INPUT"
+const (
+	childEnv     = "LES_PARSE_CHILD_INPUT"
+	childModeEnv = "LES_PARSE_CHILD_MODE"
 
-// terminatesInChild parses src (plain and with metadata) in a child test
-// process and reports whether that finished within two seconds.
-func terminatesInChild(t *testing.T, src string) bool {
+	childPlain    = "plain"
+	childMetadata = "metadata"
+
+	childPanicExit = 3
+)
+
+type childResult int
+
+const (
+	childOK childResult = iota
+	childPanic
+	childTimeout
+)
+
+// parseInChild parses src in a child test process, either plainly or with
+// all metadata, and reports how that ended and how long it took.
+func parseInChild(t *testing.T, src, mode string, limit time.Duration) (childResult, time.Duration) {
 	f := filepath.Join(t.TempDir(), "input.les")
 	if err := os.WriteFile(f, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestParseChild$")
-	cmd.Env = append(os.Environ(), childEnv+"="+f)
-	_ = cmd.Run() // a panic in the child is checked in-process afterwards
-	return ctx.Err() == nil
+	cmd.Env = append(os.Environ(), childEnv+"="+f, childModeEnv+"="+mode)
+	start := time.Now()
+	err := cmd.Run()
+	elapsed := time.Since(start)
+	if ctx.Err() != nil {
+		return childTimeout, elapsed
+	}
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == childPanicExit {
+		return childPanic, elapsed
+	}
+	if err != nil {
+		t.Fatalf("child process: %v", err)
+	}
+	return childOK, elapsed
 }
 
-// TestParseChild is the child side of terminatesInChild; it does nothing in
-// a normal test run.
+// TestParseChild is the child side of parseInChild; it does nothing in a
+// normal test run.
 func TestParseChild(t *testing.T) {
 	f := os.Getenv(childEnv)
 	if f == "" {
@@ -117,6 +161,33 @@ func TestParseChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsePlain(string(b), "f.les")
-	parser.Parse(string(b), parser.Options{Comments: true, Ranges: true})
+	defer func() {
+		if recover() != nil {
+			os.Exit(childPanicExit)
+		}
+	}()
+	switch os.Getenv(childModeEnv) {
+	case childPlain:
+		parsePlain(string(b), "f.les")
+	case childMetadata:
+		parser.Parse(string(b), parser.Options{Filename: "f.les", Comments: true, Ranges: true})
+	default:
+		t.Fatalf("unknown mode %q", os.Getenv(childModeEnv))
+	}
+}
+
+// TestParseInChildDetectsHang checks the harness on a known non-terminating
+// input of the existing parser: it must be reported as a timeout.
+func TestParseInChildDetectsHang(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes a second")
+	}
+	for _, mode := range []string{childPlain, childMetadata} {
+		if got, _ := parseInChild(t, "t:(\n", mode, time.Second); got != childTimeout {
+			t.Errorf("%s: got %v, want timeout", mode, got)
+		}
+		if got, _ := parseInChild(t, "x = 1\n", mode, 10*time.Second); got != childOK {
+			t.Errorf("%s: got %v on a valid input", mode, got)
+		}
+	}
 }
