@@ -49,7 +49,8 @@ type Parser struct {
 
 	// Metadata collection (see Parse). All nil/false for NewParser.
 	meta   *Metadata
-	curIdx int // index of curToken in the lexer's token record
+	rt     *rangeTracker // non-nil when source ranges are collected
+	curIdx int           // index of curToken in the lexer's token record
 }
 
 func NewParser(l *lexer.Lexer) *Parser {
@@ -123,8 +124,10 @@ func (p *Parser) ParseProgram() *ast.Program {
 
 	// Check optional file-level module declaration
 	if p.curTokenIs(lexer.TokenModule) {
+		modStart := p.curIdx
 		modStmt := p.parseModuleDecl()
 		if modStmt != nil {
+			p.markNode(modStmt, modStart)
 			prog.ModuleName = modStmt.Name
 			prog.Body = append(prog.Body, modStmt)
 		}
@@ -151,6 +154,15 @@ func (p *Parser) parseStmt() ast.Stmt {
 	if p.curTokenIs(lexer.TokenEOF) {
 		return nil
 	}
+	start := p.curIdx
+	res := p.parseStmtInner()
+	if p.rt != nil && res != nil && !isNilNode(res) {
+		p.markNode(res, start)
+	}
+	return res
+}
+
+func (p *Parser) parseStmtInner() ast.Stmt {
 	var res ast.Stmt
 	switch p.curToken.Type {
 	case lexer.TokenModule:
@@ -312,9 +324,12 @@ func (p *Parser) parseStructDef() *ast.StructDef {
 
 	var fields []ast.StructField
 	var methods []*ast.FuncDef
+	var fieldMarks []tokMark
 
 	p.skipNewlines()
 	for !p.curTokenIs(lexer.TokenDedent) && !p.curTokenIs(lexer.TokenEOF) {
+		memberStart := p.curIdx
+		nFields := len(fields)
 		if p.curTokenIs(lexer.TokenDef) {
 			m := p.parseFuncDef()
 			if m != nil {
@@ -379,17 +394,22 @@ func (p *Parser) parseStructDef() *ast.StructDef {
 			if opName != "" && p.expectPeek(lexer.TokenLParen) {
 				params, blockParam := p.parseFuncParams()
 				returnType, body := p.parseFuncReturnTypeAndBody()
-				methods = append(methods, &ast.FuncDef{
+				opDef := &ast.FuncDef{
 					Position:   opPos,
 					Name:       opName,
 					Params:     params,
 					BlockParam: blockParam,
 					ReturnType: strings.TrimSpace(returnType),
 					Body:       body,
-				})
+				}
+				p.markNode(opDef, memberStart)
+				methods = append(methods, opDef)
 			}
 		} else {
 			p.nextToken()
+		}
+		if p.rt != nil && len(fields) > nFields {
+			fieldMarks = append(fieldMarks, tokMark{memberStart, p.endFrom(memberStart)})
 		}
 		p.skipNewlines()
 	}
@@ -398,13 +418,17 @@ func (p *Parser) parseStructDef() *ast.StructDef {
 		p.nextToken()
 	}
 
-	return &ast.StructDef{
+	sd := &ast.StructDef{
 		Position:   pos,
 		Name:       name,
 		TypeParams: typeParams,
 		Fields:     fields,
 		Methods:    methods,
 	}
+	for i, m := range fieldMarks {
+		p.markElem(ElementKey{Owner: sd, Kind: ElemField, Index: i}, m.start, m.end)
+	}
+	return sd
 }
 
 func (p *Parser) parseInterfaceDef() *ast.InterfaceDef {
@@ -439,9 +463,12 @@ func (p *Parser) parseInterfaceDef() *ast.InterfaceDef {
 
 	var embedded []string
 	var methods []ast.MethodSig
+	var sigMarks, embMarks []tokMark
 
 	p.skipNewlines()
 	for !p.curTokenIs(lexer.TokenDedent) && !p.curTokenIs(lexer.TokenEOF) {
+		memberStart := p.curIdx
+		nSigs, nEmb := len(methods), len(embedded)
 		if p.curTokenIs(lexer.TokenIdent) {
 			mPos := p.curPos()
 			ident := p.curToken.Literal
@@ -509,6 +536,14 @@ func (p *Parser) parseInterfaceDef() *ast.InterfaceDef {
 		} else {
 			p.nextToken()
 		}
+		if p.rt != nil {
+			if len(methods) > nSigs {
+				sigMarks = append(sigMarks, tokMark{memberStart, p.endFrom(memberStart)})
+			}
+			if len(embedded) > nEmb {
+				embMarks = append(embMarks, tokMark{memberStart, p.endFrom(memberStart)})
+			}
+		}
 		p.skipNewlines()
 	}
 
@@ -516,16 +551,32 @@ func (p *Parser) parseInterfaceDef() *ast.InterfaceDef {
 		p.nextToken()
 	}
 
-	return &ast.InterfaceDef{
+	id := &ast.InterfaceDef{
 		Position:   pos,
 		Name:       name,
 		TypeParams: typeParams,
 		Embedded:   embedded,
 		Methods:    methods,
 	}
+	for i, m := range sigMarks {
+		p.markElem(ElementKey{Owner: id, Kind: ElemMethodSig, Index: i}, m.start, m.end)
+	}
+	for i, m := range embMarks {
+		p.markElem(ElementKey{Owner: id, Kind: ElemEmbedded, Index: i}, m.start, m.end)
+	}
+	return id
 }
 
 func (p *Parser) parseFuncDef() *ast.FuncDef {
+	start := p.curIdx
+	fd := p.parseFuncDefInner()
+	if fd != nil {
+		p.markNode(fd, start)
+	}
+	return fd
+}
+
+func (p *Parser) parseFuncDefInner() *ast.FuncDef {
 	// def name(params): body
 	pos := p.curPos()
 	p.nextToken() // consume 'def'
@@ -909,11 +960,15 @@ func (p *Parser) parseMatchExpr() *ast.MatchExpr {
 	p.nextToken() // consume TokenIndent
 
 	var cases []ast.MatchCase
+	var caseMarks []tokMark
+	var asIdx []int
 	p.skipNewlines()
 
 	for !p.curTokenIs(lexer.TokenDedent) && !p.curTokenIs(lexer.TokenEOF) {
 		if p.curTokenIs(lexer.TokenCase) {
 			cPos := p.curPos()
+			caseStart := p.curIdx
+			caseAsIdx := -1
 			p.nextToken() // consume 'case'
 			var pattern string
 			var tuplePat *ast.TuplePattern
@@ -963,6 +1018,7 @@ func (p *Parser) parseMatchExpr() *ast.MatchExpr {
 				p.nextToken() // consume 'as'
 				if p.curTokenIs(lexer.TokenIdent) {
 					asName = p.curToken.Literal
+					caseAsIdx = p.curIdx
 					p.nextToken()
 				} else {
 					p.addError(p.curToken.Line, p.curToken.Col, "expected identifier after 'as', got %s", lexer.FormatToken(p.curToken))
@@ -972,6 +1028,7 @@ func (p *Parser) parseMatchExpr() *ast.MatchExpr {
 				p.nextToken() // advance to identifier
 				if p.curTokenIs(lexer.TokenIdent) {
 					asName = p.curToken.Literal
+					caseAsIdx = p.curIdx
 					p.nextToken()
 				} else {
 					p.addError(p.curToken.Line, p.curToken.Col, "expected identifier after 'as', got %s", lexer.FormatToken(p.curToken))
@@ -994,6 +1051,10 @@ func (p *Parser) parseMatchExpr() *ast.MatchExpr {
 				TuplePattern: tuplePat,
 				Body:         body,
 			})
+			if p.rt != nil {
+				caseMarks = append(caseMarks, tokMark{caseStart, p.endFrom(caseStart)})
+				asIdx = append(asIdx, caseAsIdx)
+			}
 			p.skipNewlines()
 		} else {
 			p.nextToken()
@@ -1004,11 +1065,18 @@ func (p *Parser) parseMatchExpr() *ast.MatchExpr {
 		p.nextToken()
 	}
 
-	return &ast.MatchExpr{
+	me := &ast.MatchExpr{
 		Position: pos,
 		Target:   target,
 		Cases:    cases,
 	}
+	for i, m := range caseMarks {
+		p.markElem(ElementKey{Owner: me, Kind: ElemCase, Index: i}, m.start, m.end)
+		if asIdx[i] >= 0 {
+			p.markElem(ElementKey{Owner: me, Kind: ElemCaseAsName, Index: i}, asIdx[i], asIdx[i])
+		}
+	}
+	return me
 }
 
 // addLiteralPatternError reports a string or numeric literal used as a case
@@ -1178,6 +1246,9 @@ func isDestructuringIdent(s string) bool {
 
 func (p *Parser) parseTuplePattern() (*ast.TuplePattern, string) {
 	pos := p.curPos()
+	start := p.curIdx
+	var elemIdx []int
+	restIdx := -1
 	p.nextToken() // consume '('
 	var rawParts []string
 	rawParts = append(rawParts, "(")
@@ -1193,6 +1264,7 @@ func (p *Parser) parseTuplePattern() (*ast.TuplePattern, string) {
 			rawParts = append(rawParts, "...")
 			if p.curTokenIs(lexer.TokenIdent) {
 				restName = p.curToken.Literal
+				restIdx = p.curIdx
 				rawParts = append(rawParts, restName)
 				p.nextToken()
 			} else {
@@ -1207,6 +1279,7 @@ func (p *Parser) parseTuplePattern() (*ast.TuplePattern, string) {
 		if p.curTokenIs(lexer.TokenIdent) {
 			name := p.curToken.Literal
 			elems = append(elems, name)
+			elemIdx = append(elemIdx, p.curIdx)
 			rawParts = append(rawParts, name)
 			p.nextToken()
 		} else {
@@ -1226,11 +1299,16 @@ func (p *Parser) parseTuplePattern() (*ast.TuplePattern, string) {
 		p.nextToken() // consume ')'
 	}
 
-	return &ast.TuplePattern{
+	tp := &ast.TuplePattern{
 		Position: pos,
 		Elements: elems,
 		RestName: restName,
-	}, strings.Join(rawParts, "")
+	}
+	if p.rt != nil {
+		p.markNodeTo(tp, start, p.prevRealIdx())
+		p.markPatternNames(tp, elemIdx, restIdx)
+	}
+	return tp, strings.Join(rawParts, "")
 }
 
 func (p *Parser) isMemberAssignOnCurrentLine() bool {
@@ -1375,6 +1453,9 @@ func (p *Parser) parseUnpackDeclWithParen() *ast.UnpackDecl {
 
 func (p *Parser) parseUnpackDeclWithoutParen() *ast.UnpackDecl {
 	pos := p.curPos()
+	start := p.curIdx
+	var elemIdx []int
+	restIdx := -1
 	var elems []string
 	var restName string
 	for {
@@ -1384,6 +1465,7 @@ func (p *Parser) parseUnpackDeclWithoutParen() *ast.UnpackDecl {
 			}
 			if p.curTokenIs(lexer.TokenIdent) {
 				restName = p.curToken.Literal
+				restIdx = p.curIdx
 				p.nextToken()
 			} else {
 				restName = "_"
@@ -1395,6 +1477,7 @@ func (p *Parser) parseUnpackDeclWithoutParen() *ast.UnpackDecl {
 		}
 		if p.curTokenIs(lexer.TokenIdent) {
 			elems = append(elems, p.curToken.Literal)
+			elemIdx = append(elemIdx, p.curIdx)
 			p.nextToken()
 		} else {
 			break
@@ -1404,6 +1487,15 @@ func (p *Parser) parseUnpackDeclWithoutParen() *ast.UnpackDecl {
 		} else {
 			break
 		}
+	}
+	pat := &ast.TuplePattern{
+		Position: pos,
+		Elements: elems,
+		RestName: restName,
+	}
+	if p.rt != nil {
+		p.markNodeTo(pat, start, p.prevRealIdx())
+		p.markPatternNames(pat, elemIdx, restIdx)
 	}
 	if p.curTokenIs(lexer.TokenAssign) {
 		p.nextToken() // consume '='
@@ -1416,12 +1508,8 @@ func (p *Parser) parseUnpackDeclWithoutParen() *ast.UnpackDecl {
 	}
 	return &ast.UnpackDecl{
 		Position: pos,
-		Pattern: &ast.TuplePattern{
-			Position: pos,
-			Elements: elems,
-			RestName: restName,
-		},
-		Value: val,
+		Pattern:  pat,
+		Value:    val,
 	}
 }
 
@@ -1552,6 +1640,7 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 	isStmtStart := p.atStatementStart
 	p.atStatementStart = false // only top-level statement expression starts here
 
+	exprStart := p.curIdx
 	prefix := p.parsePrefix()
 	if prefix == nil {
 		return nil
@@ -1578,6 +1667,7 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				Args:     args,
 				Block:    block,
 			}
+			p.markNode(prefix, exprStart)
 		}
 	}
 
@@ -1610,6 +1700,7 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				Args:     args,
 				Block:    block,
 			}
+			p.markNode(prefix, exprStart)
 		}
 	}
 
@@ -1678,6 +1769,15 @@ func (p *Parser) parseCallArgumentsWithoutParens() []ast.Expr {
 }
 
 func (p *Parser) parsePrefix() ast.Expr {
+	start := p.curIdx
+	e := p.parsePrefixInner()
+	if p.rt != nil && e != nil && !isNilNode(e) {
+		p.markNode(e, start)
+	}
+	return e
+}
+
+func (p *Parser) parsePrefixInner() ast.Expr {
 	pos := p.curPos()
 	switch p.curToken.Type {
 	case lexer.TokenAt:
@@ -1888,6 +1988,7 @@ func (p *Parser) parseLambdaExpr() *ast.LambdaExpr {
 func (p *Parser) parseTupleItem(closing lexer.TokenType) (ast.Expr, bool) {
 	if p.curTokenIs(lexer.TokenDot) {
 		pos := p.curPos()
+		start := p.curIdx
 		dotCount := 0
 		for p.curTokenIs(lexer.TokenDot) {
 			dotCount++
@@ -1913,7 +2014,9 @@ func (p *Parser) parseTupleItem(closing lexer.TokenType) (ast.Expr, bool) {
 			p.addError(pos.Line, pos.Col, "expected '...' for tuple spread")
 		}
 		inner := p.parseExpr(PREC_LOWEST)
-		return &ast.SpreadExpr{Position: pos, Expr: inner}, false
+		sp := &ast.SpreadExpr{Position: pos, Expr: inner}
+		p.markNode(sp, start)
+		return sp, false
 	}
 	return p.parseExpr(PREC_LOWEST), false
 }
@@ -2164,6 +2267,15 @@ func (p *Parser) curPrecedence() int {
 }
 
 func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
+	start := p.curIdx
+	e := p.parseInfixInner(left)
+	if p.rt != nil && e != nil && !isNilNode(e) && e != left {
+		p.markNode(e, start)
+	}
+	return e
+}
+
+func (p *Parser) parseInfixInner(left ast.Expr) ast.Expr {
 	pos := p.curPos()
 	switch p.curToken.Type {
 	case lexer.TokenColonColon:
@@ -2447,15 +2559,18 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 func (p *Parser) parseCallArgumentItem() ast.Expr {
 	if p.curTokenIs(lexer.TokenIdent) && p.peekTokenIs(lexer.TokenColon) {
 		pos := p.curPos()
+		start := p.curIdx
 		name := p.curToken.Literal
 		p.nextToken() // consume ident
 		p.nextToken() // consume ':'
 		val := p.parseExpr(PREC_LOWEST)
-		return &ast.NamedArgExpr{
+		na := &ast.NamedArgExpr{
 			Position: pos,
 			Name:     name,
 			Value:    val,
 		}
+		p.markNode(na, start)
+		return na
 	}
 	return p.parseExpr(PREC_LOWEST)
 }
@@ -2486,6 +2601,13 @@ func (p *Parser) parseCallArguments() []ast.Expr {
 }
 
 func (p *Parser) parseBlockLiteral() *ast.BlockLiteral {
+	start := p.curIdx
+	b := p.parseBlockLiteralInner()
+	p.markNode(b, start)
+	return b
+}
+
+func (p *Parser) parseBlockLiteralInner() *ast.BlockLiteral {
 	pos := p.curPos()
 	p.inClosureDepth++
 	defer func() { p.inClosureDepth-- }()

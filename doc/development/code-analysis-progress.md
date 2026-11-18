@@ -15,8 +15,8 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 | Phase | 状態 | コミット |
 |---|---|---|
 | P0 現状調査・ベースライン | 完了 | b99e0f6 |
-| P1 コメント保持 | 完了（Issue #23 の範囲） | (P1 コミット) |
-| P2 Source Range / Walk | 未着手 | |
+| P1 コメント保持 | 完了（Issue #23 の範囲） | 8529d12 |
+| P2 Source Range / Walk | 完了 | (P2 コミット) |
 | P3 コメント関連付け・Doc | 未着手 | |
 | P4 意味解析クエリ | 未着手 | |
 | P5 統合 API・JSON | 未着手 | |
@@ -95,3 +95,59 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 - benchmark（count=6、通常経路）: allocs/op は全項目不変。Parser の B/op が +16（Parser 構造体へのフィールド追加 2 つ。割り当て回数は同じ）。
   ns/op の差は -7%〜+7% で基準の揺れ（7–18%）以内。
 - Issue #23 の範囲はこのコミットで完了扱い（Issue は自動 close しない）。
+
+## P2 記録（Source Range と AST Walk）
+
+### 位置の契約
+
+- 基準は UTF-8 byte offset（0-based, 半開区間）。`ast.Position` は不変。`source.File` が rune 列（ast と同じ規則: タブ・`\r` も 1 列、改行は `\n` のみ）と
+  LSP 用 0-based UTF-16 の双方向変換を提供。範囲外 `ErrOutOfRange`、UTF-8 文字途中 `ErrMidCharacter`、サロゲートペア途中 `ErrMidSurrogate`。
+  不正 UTF-8 は lexer の `[]rune` 変換と同じく 1 byte = 1 文字（U+FFFD）として数え、`source.InvalidUTF8` で検出できる。CLI の受理条件は変更なし。
+- `parser.Parse(src, Options{Ranges: true})` で `Metadata.Tokens`（消費された全トークンの span）と `Metadata.Ranges` を得る。
+  NEWLINE/INDENT/DEDENT/EOF は `Synthetic` で幅 0（原文を偽造しない）。
+
+### 範囲の決め方
+
+- パーサーがノード生成時に「開始トークン」と「実際に消費した最後のトークン」の index を記録（`parseStmt`/`parsePrefix`/`parseInfix`/`parseFuncDef`/`parseBlockLiteral` のラッパーと、
+  それ以外で生成されるノード（括弧省略呼び出し、NamedArg、Spread、TuplePattern、struct の演算子メソッド、先頭 module 宣言）の個別記録）。
+- 終端規則（`endFrom`）: 開始から現在トークンまでにレイアウト/`;` があれば、構文は終端を越えて進んでいるので直前の実トークンを終端とする。なければ現在トークン（Pratt の不変条件）。
+- 最終範囲 = 記録トークン範囲 ∪ 子の範囲（中置ノードの Pos は演算子なので、左オペランドとの合併で開始を得る）。
+- 先に記録されたノードは上書きしない（`(a + b)` の括弧はどのノードにも属さない）。
+- 合成ノード（`@x` の `self`、インライン lambda の `ExprStmt`、`x |> +(…)` の callee、case パターン文字列から作る RegexLit）は `Synthetic`。子があれば子の合併範囲、なければ範囲なし（`Node` は ok=false, Synthetic=true）。
+- `Program` は常にファイル全体 `[0, len)`。
+
+### 要素（Node でない構文要素）
+
+`ElementKey{Owner, Kind, Index, Sub}` で snapshot 内で安定に識別:
+宣言名（FuncDef/StructDef/InterfaceDef/ModuleDecl/VarDecl/ImportStmt の alias とパス）、引数名（FuncDef/Lambda/Block、&block）、型引数名、
+struct フィールド（全体と名前、埋め込み含む）、MethodSig（全体・名前・引数名）、埋め込み interface、match case（全体と `as` 名）、
+TuplePattern の要素名・rest 名、MemberAccess/MemberAssign/ModuleAccess のメンバー名とモジュール名、NamedArg 名、Dict エントリ。
+
+### カバレッジ表
+
+| ノード | 範囲 | 補足 |
+|---|---|---|
+| Program | ファイル全体 | |
+| ModuleDecl, ImportStmt | キーワード〜名前/alias | 名前・パスは要素 |
+| VarDecl, UnpackDecl, MemberAssignStmt, ExprStmt, Return/Break/ContinueStmt | 文の最初〜最後の実トークン | 終端の改行・`;` は含まない |
+| FuncDef, StructDef, InterfaceDef, IfStmt, ForStmt | キーワード〜ブロック最後の実トークン | インライン本体・`+;` 形式も同規則 |
+| TuplePattern | `(`〜`)` / 括弧なしは名前列 | |
+| 全 Expr | 最初〜最後のトークン（子との合併） | 括弧付き呼び出しは `)` まで、Index/TypeInst は `]` まで |
+| MatchExpr, BlockLiteral, ブロック lambda | キーワード〜ブロック最後 | |
+| 合成ノード | 子の合併 or なし | `Synthetic` |
+
+テスト: 全 30 ノード型を含む fixture（`TestRangeCoverage` が ast.go から型一覧を抽出して不足を検出）、LF/CRLF で不変条件
+（ファイル内、Pos を含む、前後に空白なし、親が子を包含、兄弟の順序）、構文エラー含む全コーパス、テキスト一致 28 ケース、合成ノード、要素 span。
+`ast.Walk`/`Inspect`/`Preorder`/`IsNil` を追加（未知型で panic、`TestWalkHandlesAllNodeTypes` が ast.go と walk.go の型の一致を静的に検査）。
+Walk はメタデータを訪問しない。struct はフィールド→メソッドの順、`x |> f` を脱糖した CallExpr は callee が引数より後ろの位置にある。
+
+### 不足・明示的な非対応
+
+- 型注釈は文字列で AST に残るため、注釈内の個々の型名の範囲は持たない（注釈全体の範囲もノードとしては持たない）。
+- グループ化の括弧と区切り記号はノードに属さない。フォーマッターは `Metadata.Tokens` と原文から取得する。lossless CST は対象外。
+- 構文エラー時は範囲を返すが、エラー回復で同じトークンを二度読む場合があり兄弟順序は保証しない。
+
+### benchmark（通常経路, count=6）
+
+Parse: allocs/op 不変、B/op +32（Parser 構造体のフィールド追加）。ns/op は -3%〜+6%（基準揺れ 10–18% 以内）。
+詳細収集時（`BenchmarkParseMetadata`）は few_comments 151µs/126KB/572 allocs、long200 15ms/10MB/27998 allocs（通常の約 3–5 倍）。
