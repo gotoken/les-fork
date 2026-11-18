@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 
@@ -143,13 +144,13 @@ func IndexComments(res *parser.Result) (*CommentIndex, error) {
 		startAt[c.span.Start] = append(startAt[c.span.Start], c)
 		endAt[c.span.End] = append(endAt[c.span.End], c)
 	}
-	containers := containerSpans(res.Program, md.Ranges)
+	sweep := newContainerSweep(containerSpans(res.Program, md.Ranges))
 
 	for i, c := range md.Comments {
 		a := Association{Comment: i, Container: res.Program}
 		a.OwnLine = onlySpaceBefore(text, c.Span.Start)
 		a.BlankLinesAfter = blankLinesAfter(text, c.Span.End)
-		if n := innermostContaining(containers, c.Span); n != nil {
+		if n := sweep.innermost(c.Span); n != nil {
 			a.Container = n
 		}
 		prev, next := neighbours(real, c.Span)
@@ -222,24 +223,24 @@ func (ci *CommentIndex) buildDocs(cands []candidate, text string) {
 				idxs = append(idxs, i)
 			}
 		}
-		var run []int
-		// Walk backwards from the comment closest to the declaration.
+		var run []int // built backwards, from the comment closest to the declaration
 		for k := len(idxs) - 1; k >= 0; k-- {
 			a := ci.assoc[idxs[k]]
 			if a.Relation != Leading || a.BlankLinesAfter != 0 {
 				break
 			}
-			if len(run) > 0 && run[0] != a.Comment+1 {
+			if len(run) > 0 && run[len(run)-1] != a.Comment+1 {
 				break // not consecutive comments
 			}
 			if len(run) == 0 && !directlyAbove(text, ci.comments[a.Comment].Span.End, c.span.Start) {
 				break
 			}
-			run = append([]int{a.Comment}, run...)
+			run = append(run, a.Comment)
 		}
 		if len(run) == 0 {
 			continue
 		}
+		slices.Reverse(run)
 		d := &Documentation{Decl: c.anchor}
 		lines := make([]string, len(run))
 		for j, ci2 := range run {
@@ -359,7 +360,8 @@ func containerSpans(prog *ast.Program, r *parser.Ranges) []nodeSpan {
 }
 
 // innermostContaining returns the smallest node whose range strictly
-// contains s (s inside, not touching either end).
+// contains s (s inside, not touching either end); among equally small
+// ones, the first in ns. It is the reference for containerSweep.
 func innermostContaining(ns []nodeSpan, s source.Span) ast.Node {
 	var best ast.Node
 	bestLen := -1
@@ -371,6 +373,58 @@ func innermostContaining(ns []nodeSpan, s source.Span) ast.Node {
 		}
 	}
 	return best
+}
+
+// containerSweep answers innermostContaining for spans queried in
+// non-decreasing start order (comments in source order) without scanning
+// every node per query: nodes enter an active list when they start before
+// the query and leave it once they end at or before a query's start (they
+// cannot contain any later query). The active list holds the nodes open at
+// that point, about the nesting depth. Ties are broken by the position in
+// ns, exactly like innermostContaining.
+type containerSweep struct {
+	byStart []sweepNode // ordered by start
+	next    int         // first node of byStart not yet active
+	active  []sweepNode
+}
+
+type sweepNode struct {
+	nodeSpan
+	ord int // index in ns
+}
+
+func newContainerSweep(ns []nodeSpan) *containerSweep {
+	byStart := make([]sweepNode, len(ns))
+	for i, n := range ns {
+		byStart[i] = sweepNode{n, i}
+	}
+	slices.SortStableFunc(byStart, func(a, b sweepNode) int { return a.span.Start - b.span.Start })
+	return &containerSweep{byStart: byStart}
+}
+
+func (cs *containerSweep) innermost(s source.Span) ast.Node {
+	for cs.next < len(cs.byStart) && cs.byStart[cs.next].span.Start < s.Start {
+		cs.active = append(cs.active, cs.byStart[cs.next])
+		cs.next++
+	}
+	var best *sweepNode
+	kept := cs.active[:0]
+	for _, n := range cs.active {
+		if n.span.End <= s.Start {
+			continue // ended before this span, so before every later one
+		}
+		kept = append(kept, n)
+		if s.End < n.span.End && (best == nil || n.span.Len() < best.span.Len() ||
+			(n.span.Len() == best.span.Len() && n.ord < best.ord)) {
+			n := n
+			best = &n
+		}
+	}
+	cs.active = kept
+	if best == nil {
+		return nil
+	}
+	return best.node
 }
 
 func containsSpan(r *parser.Ranges, n ast.Node, s source.Span) bool {
