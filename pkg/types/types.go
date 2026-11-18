@@ -771,21 +771,29 @@ func (i *InterfaceType) Equals(other Type) bool {
 }
 
 func (i *InterfaceType) LookupMethod(name string) (*FuncType, bool) {
+	m, _, ok := i.lookupMethod(name)
+	return m, ok
+}
+
+// lookupMethod is LookupMethod that also reports which interface (i or an
+// embedded one) declares the method; the owner is nil for the implicit
+// Type() method.
+func (i *InterfaceType) lookupMethod(name string) (*FuncType, *InterfaceType, bool) {
 	if m, ok := i.Methods[name]; ok {
-		return m, true
+		return m, i, true
 	}
 	if name == "Type" {
 		return &FuncType{
 			Arg: &TupleType{Elems: []Type{}},
 			Ret: TypeString,
-		}, true
+		}, nil, true
 	}
 	for _, emb := range i.Embedded {
-		if m, ok := emb.LookupMethod(name); ok {
-			return m, true
+		if m, owner, ok := emb.lookupMethod(name); ok {
+			return m, owner, true
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // ResolveInterfaceForReceiver applies default type arguments (if unspecialized) and substitutes Self with selfType.
@@ -1880,23 +1888,42 @@ func formatTypeWith(t Type, structName func(*StructType) string) string {
 type memberCandidate struct {
 	typ    Type
 	origin string
+	owner  *StructType
 }
+
+// memberOutcome says how a struct member lookup ended.
+type memberOutcome int
+
+const (
+	memberFound     memberOutcome = iota // owner declares the member
+	memberAmbiguous                      // more than one candidate (error)
+	memberTypeName                       // the implicit Type() method
+	memberMissing                        // no such member (error)
+)
 
 // LookupMember searches for field or method on StructType with Go-style promotion rules.
 // Returns member type, or error if not found or ambiguous.
 func (s *StructType) LookupMember(name string) (Type, error) {
+	t, _, _, err := s.lookupMember(name)
+	return t, err
+}
+
+// lookupMember is LookupMember that also reports which struct (s or an
+// embedded one) declares the member, so that name resolution can be
+// observed instead of re-implemented.
+func (s *StructType) lookupMember(name string) (Type, *StructType, memberOutcome, error) {
 	if s.AmbiguousFields != nil && s.AmbiguousFields[name] {
 		if s.DirectFields == nil || !s.DirectFields[name] {
-			return nil, fmt.Errorf("ambiguous selector '%s' on type %s", name, s.Name)
+			return nil, nil, memberAmbiguous, fmt.Errorf("ambiguous selector '%s' on type %s", name, s.Name)
 		}
 	}
 
 	// 1. Direct fields & methods on self (depth 0)
 	if ft, ok := s.Fields[name]; ok {
-		return ft, nil
+		return ft, s, memberFound, nil
 	}
 	if mt, ok := s.Methods[name]; ok {
-		return mt, nil
+		return mt, s, memberFound, nil
 	}
 
 	// 2. BFS on embedded structs depth by depth
@@ -1915,23 +1942,23 @@ func (s *StructType) LookupMember(name string) (Type, error) {
 			visited[emb] = true
 
 			if ft, ok := emb.Fields[name]; ok {
-				candidates = append(candidates, memberCandidate{typ: ft, origin: emb.Name})
+				candidates = append(candidates, memberCandidate{typ: ft, origin: emb.Name, owner: emb})
 			}
 			if mt, ok := emb.Methods[name]; ok {
-				candidates = append(candidates, memberCandidate{typ: mt, origin: emb.Name})
+				candidates = append(candidates, memberCandidate{typ: mt, origin: emb.Name, owner: emb})
 			}
 			nextLevel = append(nextLevel, emb.Embedded...)
 		}
 
 		if len(candidates) == 1 {
-			return candidates[0].typ, nil
+			return candidates[0].typ, candidates[0].owner, memberFound, nil
 		}
 		if len(candidates) > 1 {
 			origins := make([]string, len(candidates))
 			for i, c := range candidates {
 				origins[i] = c.origin
 			}
-			return nil, fmt.Errorf("ambiguous selector '%s' on type %s (candidates in %s)", name, s.Name, strings.Join(origins, ", "))
+			return nil, nil, memberAmbiguous, fmt.Errorf("ambiguous selector '%s' on type %s (candidates in %s)", name, s.Name, strings.Join(origins, ", "))
 		}
 
 		currentLevel = nextLevel
@@ -1941,10 +1968,10 @@ func (s *StructType) LookupMember(name string) (Type, error) {
 		return &FuncType{
 			Arg: &TupleType{Elems: []Type{}},
 			Ret: TypeString,
-		}, nil
+		}, nil, memberTypeName, nil
 	}
 
-	return nil, fmt.Errorf("type %s has no field or method '%s'", s.Name, name)
+	return nil, nil, memberMissing, fmt.Errorf("type %s has no field or method '%s'", s.Name, name)
 }
 
 // ModuleType represents a loaded module and its exported member types and type definitions.
