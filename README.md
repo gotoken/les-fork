@@ -21,9 +21,10 @@ Les is implemented in Go.
   - Go-style implicit structural typing (duck typing) for interfaces.
   - Struct embedding with automatic field and method promotion.
   - Clear visibility rules based on identifier casing (uppercase `[A-Z]` is exported/public; lowercase `[a-z_]` is private/module-local).
-- **Hindley-Milner Static Type Inference & Union Types**:
-  - Full static type inference: explicit type annotations are optional.
-  - First-class union types (`Type1 | Type2`) and exhaustive pattern matching (`match ... case`).
+- **Bidirectional Local & Gradual Type Inference & Union Types**:
+  - Bidirectional local type inference with gradual `Unknown` fallback: explicit type annotations on variables, return types, generic calls, and contextual lambdas are optional.
+  - Statically inferred types propagate onto lazy thunks so `is` and `match` inspect types without forcing deferred expressions, while `Unknown` defers concrete checks until forced.
+  - First-class union types (`Type1 | Type2`), flow-sensitive narrowing, and exhaustive pattern matching (`match ... case`).
 - **Demand-Driven Lazy Evaluation**:
   - Function arguments, container elements, and variables are deferred thunks by default.
   - Strict demand boundaries at side-effect points (`print`, `exit`) or via explicit forcing (`expr!` or `force expr`).
@@ -81,7 +82,7 @@ match val:
 Comprehensive documentation is organized into dedicated guides in the [`doc/`](doc/) directory:
 
 - [**Language Syntax & Semantics Guide**](doc/syntax.md):
-  Covers primitive types, Hindley-Milner type inference, union types, generic type constraints, modules, function call semantics, operator precedence, lambdas, control flow, structs, embedding, interfaces, and error handling.
+  Covers primitive types, bidirectional local and gradual type inference, union types, generic type constraints, modules, function call semantics, operator precedence, lambdas, control flow, structs, embedding, interfaces, and error handling.
 - [**Standard Library & Built-in Reference**](doc/reference.md):
   Complete reference manual for built-in functions (`print`, `exit`, `gets`), predefined variables (`Args`, `Stdin`, `Stdout`, `Stderr`), primitive type methods, core interfaces (`Show`, `Equatable`, `Comparable`, `Indexable`, `Numeric`), and standard library modules (`io`, `bufio`).
 

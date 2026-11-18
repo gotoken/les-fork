@@ -507,7 +507,7 @@ type breakTargetCtx struct {
 	breakTypes []Type
 }
 
-// Inferencer performs Hindley-Milner type inference with lexical scope checking.
+// Inferencer performs bidirectional local and gradual static type inference with lexical scope checking.
 type Inferencer struct {
 	nextVarID    int
 	scope        *Scope
