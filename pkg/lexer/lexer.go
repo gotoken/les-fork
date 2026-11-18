@@ -19,6 +19,10 @@ type Lexer struct {
 	parenDepth      int   // bracket/brace/paren depth disables newlines/indents
 	parenIndentBase []int // indentStack length recorded at each opening bracket/brace/paren
 	lastTokenType   TokenType
+
+	// rec is non-nil only for lexers created with NewLexerWithOptions and a
+	// non-zero Options. A clone never records (see Clone).
+	rec *recorder
 }
 
 // NewLexer creates a new Lexer instance.
@@ -43,6 +47,9 @@ func (l *Lexer) Clone() *Lexer {
 	c.indentStack = append([]int(nil), l.indentStack...)
 	c.pending = append([]Token(nil), l.pending...)
 	c.parenIndentBase = append([]int(nil), l.parenIndentBase...)
+	// Speculative scans must not leave comments or tokens in the metadata of
+	// the lexer that is actually consumed.
+	c.rec = nil
 	return &c
 }
 
@@ -116,9 +123,7 @@ func (l *Lexer) skipBlankLinesAndMeasureIndent() (indentSize int, reachedEOF boo
 			indentSize += 4
 			l.advance()
 		} else if curr == '#' {
-			for l.pos < len(l.source) && l.source[l.pos] != '\n' {
-				l.advance()
-			}
+			l.skipComment()
 		} else if curr == '\r' {
 			l.advance()
 		} else if curr == '\n' {
@@ -139,7 +144,22 @@ func (l *Lexer) NextToken() Token {
 	} else {
 		l.lastTokenType = tok.Type
 	}
+	if l.rec != nil && l.rec.opts.Tokens {
+		l.rec.token(tok, l.pos)
+	}
 	return tok
+}
+
+// skipComment consumes a '#' comment up to, but not including, the next '\n'
+// (or the end of input), recording it when comment collection is enabled.
+func (l *Lexer) skipComment() {
+	start := l.pos
+	for l.pos < len(l.source) && l.source[l.pos] != '\n' {
+		l.advance()
+	}
+	if l.rec != nil {
+		l.rec.comment(start, l.pos)
+	}
 }
 
 func (l *Lexer) nextTokenInternal() Token {
@@ -154,9 +174,7 @@ func (l *Lexer) nextTokenInternal() Token {
 
 		// Handle comments
 		if r == '#' {
-			for l.pos < len(l.source) && l.source[l.pos] != '\n' {
-				l.advance()
-			}
+			l.skipComment()
 			continue
 		}
 
@@ -173,9 +191,7 @@ func (l *Lexer) nextTokenInternal() Token {
 
 			// Skip trailing comment on the same line
 			if l.pos < len(l.source) && l.source[l.pos] == '#' {
-				for l.pos < len(l.source) && l.source[l.pos] != '\n' {
-					l.advance()
-				}
+				l.skipComment()
 			}
 
 			if l.pos < len(l.source) && l.source[l.pos] == '\r' {
@@ -291,12 +307,17 @@ func (l *Lexer) nextTokenInternal() Token {
 				for k < len(l.source) && (l.source[k] == ' ' || l.source[k] == '\t' || l.source[k] == '\r') {
 					k++
 				}
+				commentStart := -1
 				if k < len(l.source) && l.source[k] == '#' {
+					commentStart = k
 					for k < len(l.source) && l.source[k] != '\n' {
 						k++
 					}
 				}
 				if k < len(l.source) && l.source[k] == '\n' {
+					if commentStart >= 0 && l.rec != nil {
+						l.rec.comment(commentStart, k)
+					}
 					for l.pos <= k {
 						l.advance() // consume up to and including '\n'
 					}

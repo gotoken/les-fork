@@ -46,6 +46,10 @@ type Parser struct {
 	inParenOmissionCall bool
 	atStatementStart    bool
 	inClosureDepth      int
+
+	// Metadata collection (see Parse). All nil/false for NewParser.
+	meta   *Metadata
+	curIdx int // index of curToken in the lexer's token record
 }
 
 func NewParser(l *lexer.Lexer) *Parser {
@@ -75,11 +79,15 @@ func (p *Parser) addError(line, col int, format string, args ...any) {
 	} else {
 		p.errors = append(p.errors, fmt.Sprintf("%s:%d: %s at col %d", fn, line, msg, col))
 	}
+	if p.meta != nil {
+		p.recordDiagnostic(line, col, msg, p.errors[len(p.errors)-1])
+	}
 }
 
 func (p *Parser) nextToken() {
 	p.curToken = p.peekToken
 	p.peekToken = p.l.NextToken()
+	p.curIdx++
 }
 
 func (p *Parser) curTokenIs(t lexer.TokenType) bool {
