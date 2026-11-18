@@ -126,3 +126,36 @@ func TestWriteFailedJSON(t *testing.T) {
 		t.Errorf("%+v", doc)
 	}
 }
+
+// TestSnapshotConcurrentQueries backs the documented guarantee that a
+// snapshot's methods are safe for concurrent use (run with -race).
+func TestSnapshotConcurrentQueries(t *testing.T) {
+	src := benchcorpus.Corpus()[0].Src
+	s, err := Analyze(Input{Source: src}, All())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	_ = s.WriteJSON(&want)
+	done := make(chan string)
+	for g := 0; g < 8; g++ {
+		go func() {
+			for off := 0; off < len(src); off += 7 {
+				s.SymbolAt(off)
+				s.TypeAt(off)
+			}
+			for _, sym := range s.Symbols() {
+				s.References(sym.ID)
+				s.Documentation(sym.ID)
+			}
+			var buf bytes.Buffer
+			_ = s.WriteJSON(&buf)
+			done <- buf.String()
+		}()
+	}
+	for g := 0; g < 8; g++ {
+		if got := <-done; got != want.String() {
+			t.Error("concurrent WriteJSON differs")
+		}
+	}
+}
