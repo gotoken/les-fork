@@ -1,0 +1,78 @@
+# Module-level documentation for the sample.
+# It spans several lines.
+
+# Point is a 2D point.
+# Fields default to zero.
+struct Point:
+    # x coordinate
+    x: Int = 0 # trailing comment on x
+    # y coordinate
+    y: Int = 0 # trailing comment on y
+
+    # DistSq returns the squared distance from origin.
+    def DistSq() -> Int:
+        # multiply and add
+        x * x + y * y # inline
+
+    # Add returns the sum of two points.
+    def Add(other: Point) -> Point:
+        Point(x: @x + other.x, y: @y + other.y) # constructor
+
+# Shape is anything with an area.
+interface Shape:
+    # Area computes the area.
+    Area(): Int
+
+# Rect is a rectangle.
+struct Rect:
+    w: Int # width
+    h: Int # height
+
+    # Area of the rectangle.
+    def Area() -> Int:
+        @w * @h # product
+
+# sum_to adds 1..n recursively.
+def sum_to(n: Int) -> Int:
+    # accumulator (unused)
+    total = 0
+    if n <= 0: # base case
+        return 0
+    # recursive case
+    n + sum_to(n - 1)
+
+# classify returns the name of the dynamic type.
+def classify(v: Int | String) -> String:
+    match v: # dispatch
+        # integers
+        case Int:
+            "int"
+        # strings
+        case String:
+            "string"
+
+# apply calls fn with val.
+def apply(fn: (Int) -> Int, val: Int): Int:
+    fn(val) # call
+
+# each_int iterates a tuple.
+def each_int(items: (Int, ...), fn: (Int) -> ()): ():
+    (head, ...tail) = items # split
+    fn(head)
+    if tail.Len() > 0:
+        each_int(tail, fn) # recurse
+
+# --- top-level statements ---
+p = Point(3, 4) # a point
+q = p.Add(Point(1, 1))
+r = Rect(w: 2, h: 5)
+# doubles its argument
+double = |x: Int|: x * 2
+total = apply(double, 21) + sum_to(10) # combine
+label = classify(total)
+d = {"a": 1, # first
+     "b": 2} # second
+t = (1, 2, # in tuple
+     3)
+shown = total > 10 ? "big" : "small" # ternary
+# trailing comment at end of file
