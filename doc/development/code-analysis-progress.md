@@ -14,12 +14,12 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 
 | Phase | 状態 | コミット |
 |---|---|---|
-| P0 現状調査・ベースライン | 完了 | b99e0f6 |
-| P1 コメント保持 | 完了（Issue #23 の範囲） | 8529d12 |
-| P2 Source Range / Walk | 完了 | f862a3c |
-| P3 コメント関連付け・Doc | 完了 | 8f5e03d |
-| P4 意味解析クエリ | 完了 | 3c56133 |
-| P5 統合 API・JSON | 完了 | 660eaee |
+| P0 現状調査・ベースライン | 完了 | 2b40990 |
+| P1 コメント保持 | 完了（Issue #23 の範囲） | c575067 |
+| P2 Source Range / Walk | 完了 | 22903c3 |
+| P3 コメント関連付け・Doc | 完了 | e32b92c |
+| P4 意味解析クエリ | 完了 | faeaba0 |
+| P5 統合 API・JSON | 完了 | 0f015ae |
 
 ## P0 記録
 
@@ -241,7 +241,7 @@ ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィール
   `status` は「解析が最後まで走ったか」を表し、プログラムの正しさは `references[].status` と `diagnostics` で見る。
 - 位置の単位は UTF-8 バイトだけを出す（LSP の UTF-16 変換は Go API の `source.File` で行う）。
 
-## 最終検証（P5 完了時点 660eaee。ファズ・並行テスト追加後の 324a7d0 で test / race / vet / diff --check を再実行し全て通過）
+## 最終検証（P5 完了時点 0f015ae。ファズ・並行テスト追加後の f7979ef で test / race / vet / diff --check を再実行し全て通過）
 
 - `go test -count=1 ./...`: 全パッケージ ok（cmd/les, analysis, ast, eval, benchcorpus, lexer, parser, source, types）。`-v` で RUN 910 件。
 - `go test -race -count=1 ./...`: 全パッケージ ok。
@@ -251,7 +251,7 @@ ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィール
 
 ### benchmark（通常経路、base と交互実行）
 
-base.txt 取得時と今とでホストの状態が違うため、P0 コミット（b99e0f6: ベンチのみ追加、本体コードは base と同一）と HEAD のテストバイナリを
+base.txt 取得時と今とでホストの状態が違うため、P0 コミット（2b40990: ベンチのみ追加、本体コードは base と同一）と HEAD のテストバイナリを
 先にビルドし、交互に 8 ラウンド（count=2, benchtime=0.3s）実行して比較した。生データ: `doc/development/bench-final.txt`。
 
 | benchmark | ns/op（中央値 base → head / 揺れ） | B/op | allocs/op |

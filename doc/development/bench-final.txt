@@ -1,5 +1,5 @@
 # Final benchmark, interleaved runs of prebuilt test binaries (8 rounds x count=2, benchtime=0.3s)
-# base = b99e0f6 (P0: benchmarks only, no code change), head = 660eaee
+# base = 2b40990 (P0: benchmarks only, no code change), head = 0f015ae
 ## base
 BenchmarkLex/few_comments-4         	   10000	     31749 ns/op	  29.61 MB/s	    9793 B/op	     221 allocs/op
 BenchmarkLex/few_comments-4         	   10000	     31123 ns/op	  30.20 MB/s	    9794 B/op	     221 allocs/op
