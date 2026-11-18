@@ -57,6 +57,19 @@ func (fml *FileModuleLoader) Load(modPath string) (*ModuleType, error) {
 		return nil, fmt.Errorf("failed to read module file %s: %w", targetFile, err)
 	}
 
+	modVal, err := compileModule(modPath, targetFile, contentBytes, fml.Load)
+	if err != nil {
+		return nil, err
+	}
+
+	fml.cache[modPath] = modVal
+	return modVal, nil
+}
+
+// compileModule parses and type-checks one module source and returns its
+// exported symbols (identifiers starting with [A-Z]). load resolves the
+// module's own imports.
+func compileModule(modPath, targetFile string, contentBytes []byte, load func(string) (*ModuleType, error)) (*ModuleType, error) {
 	// Lex & Parse
 	l := lexer.NewLexer(string(contentBytes))
 	p := parser.NewParser(l)
@@ -74,7 +87,7 @@ func (fml *FileModuleLoader) Load(modPath string) (*ModuleType, error) {
 
 	// Type inference in dedicated module inferencer
 	modInf := NewInferencer()
-	modInf.SetModuleLoader(fml.Load)
+	modInf.SetModuleLoader(load)
 	if err := modInf.InferProgram(prog); err != nil {
 		return nil, fmt.Errorf("type error in module '%s': %w", modName, err)
 	}
@@ -92,12 +105,9 @@ func (fml *FileModuleLoader) Load(modPath string) (*ModuleType, error) {
 		}
 	}
 
-	modVal := &ModuleType{
+	return &ModuleType{
 		Name:    modName,
 		Exports: exports,
 		Types:   typesMap,
-	}
-
-	fml.cache[modPath] = modVal
-	return modVal, nil
+	}, nil
 }

@@ -17,8 +17,8 @@ Issue: gotoken/les-fork#23 / 指示書: les-code-analysis-implementation.md（�
 | P0 現状調査・ベースライン | 完了 | b99e0f6 |
 | P1 コメント保持 | 完了（Issue #23 の範囲） | 8529d12 |
 | P2 Source Range / Walk | 完了 | f862a3c |
-| P3 コメント関連付け・Doc | 完了 | (P3 コミット) |
-| P4 意味解析クエリ | 未着手 | |
+| P3 コメント関連付け・Doc | 完了 | 8f5e03d |
+| P4 意味解析クエリ | 完了 | (P4 コミット) |
 | P5 統合 API・JSON | 未着手 | |
 
 ## P0 記録
@@ -161,3 +161,52 @@ Parse: allocs/op 不変、B/op +32（Parser 構造体のフィールド追加）
   宣言が行頭にない場合（`x = 1; y = 2` の y）は文書なし。再束縛の除外は意味解析が必要なので P4 の symbol 単位で確定。
 - テスト: 宣言種別ごと（var/struct/field/method/interface/method sig/module）、連続行・`#` だけの行、空行、別階層、行頭でない宣言、
   同名の入れ子関数、trailing/internal/unattached、行継続、括弧内、EOF、CRLF、メタデータ不足時のエラー。
+
+## P4 記録（意味解析クエリ）
+
+### 型推論器への観測（`pkg/types/record.go`）
+
+- `Inferencer.SetRecorder(*Recorder)` を設定したときだけ記録。通常経路は nil チェックのみ。`Scope` に `origins map[string]int` を追加
+  （記録時のみ生成、`Clone` で複製）。第二の名前解決器は作らず、宣言は型推論器が `Declare` した直後、参照は `*ast.Identifier` の `Lookup`、
+  `MemberAccessExpr`/`MemberAssignStmt` のメンバー解決、`ModuleAccessExpr`、`ImportStmt` の各箇所で観測する。
+- 宣言の同一性は `DeclKey`（宣言ノード＋種別＋index、引数は `*ast.FuncParam`、型引数は `*ast.TypeParam` のポインタ）。
+  型推論器は do-block を同じ Params スライスを共有する合成 LambdaExpr で推論するため、ポインタで同一性を保てる。
+  自己再帰関数の本体の再推論（2 パス）でも同じ key に集約される。
+- 同一スコープで既に宣言済みの名前への `Declare` は再束縛として扱い、新しい宣言ではなく `rebind` 参照を記録。
+  if/match の型の絞り込み（子スコープへの同名再宣言）は origin を持たないので、外側の同名束縛の宣言に解決される（同一性を保つ）。
+- メソッド内の裸のフィールド名（型推論器がメソッドスコープに宣言する）はフィールド宣言に解決。昇格メンバーは直接宣言→埋め込みを深さ優先で探し、
+  複数なら ambiguous。外部モジュールの struct は external。
+- `self` は implicit、ルートスコープ（組み込み）は builtin（定義位置なし）、束縛なしは unresolved。
+
+### Snapshot（`pkg/analysis`）
+
+- `Analyze(Input{URI, Source, Modules}, Options)`。Options は Comments/Ranges/Documentation/Semantic、依存は自動有効化（Documentation→Comments+Ranges、Semantic→Ranges）。
+- `Symbols/Symbol/SymbolAt/TypeAt/TypeOf/Definition/References/AllReferences/Documentation/Diagnostics/Status/SemanticStatus`。
+- Symbol ID は snapshot 内でのみ有効（`s1..` を宣言名の位置順、組み込みは `builtin:<name>`）。同一入力・同一設定で決定的。
+- 型は型推論器の `String()` をそのまま使い、Unknown/型変数は `TypeKnown=false`。注釈は推論前に記録した「書かれた注釈」（型推論器が do-block 引数の
+  `TypeAnnot` に推論型を書き込む既存挙動があるため）。
+- 状態: 構文エラー→意味解析は `not-run`。型エラーで推論が止まると `partial`（以降の参照は欠落し、`References().Complete=false`）。
+  型エラーは文字列しか得られないため span は推測せず nil。警告と構文エラーは位置付き。
+- モジュール: `DirResolver(dir)` は `os.OpenRoot` で root 外（`..`、絶対パス、symlink 脱出）を拒否する `types.FSModuleLoader` を使う。
+  resolver なしの場合はユーザーモジュールを読まず warning＋partial。`mod::X` のメンバーは external（別モジュールのデータは snapshot に入れない）。
+  `types.FileModuleLoader.Load` は共通部分を `compileModule` に切り出しただけで挙動は同一。
+- 実行しない: 型推論のみ。`print`/`gets`/`exit` を含むプログラムで出力が出ないことをテスト。
+
+### 未対応（明示）
+
+- 型注釈文字列の中の型名（`x: Point` の Point）への参照は記録しない（AST にノードがないため）。
+- 名前付き引数 `Point(x: 1)` → フィールドへの参照は記録しない。
+- 前方参照（関数本体から後で定義される関数）は型推論器が束縛を見ないため unresolved のまま報告する（推測で補完しない）。
+- メソッド内の裸の昇格フィールド名は型推論器が Unknown とするため unresolved。
+- interface の埋め込みメソッドへの member 参照は external 扱い。interface メソッドシグネチャの型引数名の span はない。
+- 外部モジュールのシンボル定義位置は返さない（external）。
+
+### テスト
+
+shadowing、同名の別スコープ、再束縛（doc は宣言側のみ）、struct のフィールド/メソッド/埋め込み昇格/ambiguous、ジェネリクス、
+lambda/do-block/match as/tuple pattern/unpack、型の絞り込みで同一性維持、Unknown、未解決・前方参照、型エラー partial、構文エラー not-run、
+モジュール（root 外拒否・resolver なし・同名別モジュール）、非実行、記録 on/off で型推論の結果（エラー・警告・全式の型）が同一、ID の決定性。
+
+### benchmark（通常経路, count=6）
+
+ParseInfer: allocs/op 不変、B/op +0.3%（Scope と Inferencer のフィールド追加）、ns/op -9%〜+1%（揺れの範囲内）。

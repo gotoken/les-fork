@@ -343,6 +343,7 @@ type Scope struct {
 	parent   *Scope
 	bindings map[string]Type
 	declared map[string]bool // declarations made specifically in this lexical scope
+	origins  map[string]int  // declaration index+1 per name; only set when recording (see record.go)
 }
 
 func NewScope(parent *Scope) *Scope {
@@ -388,6 +389,12 @@ func (s *Scope) Clone() *Scope {
 	}
 	for k, v := range s.declared {
 		c.declared[k] = v
+	}
+	if s.origins != nil {
+		c.origins = make(map[string]int, len(s.origins))
+		for k, v := range s.origins {
+			c.origins[k] = v
+		}
 	}
 	return c
 }
@@ -437,6 +444,7 @@ type Inferencer struct {
 	funcCtx      *funcReturnCtx
 	breakCtx     *breakTargetCtx
 	selfType     Type
+	rec          *Recorder // optional name-resolution observer (record.go)
 }
 
 var BuiltinBytesFuncType = &FuncType{
@@ -1399,9 +1407,11 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			inf.addWarning(s.Pos(), "Unknown type of variable '%s'", s.Name)
 		}
 		// Enforce same-scope duplicate declaration prohibition
+		wasDeclared := inf.declaredHere(inf.scope, s.Name)
 		if err := inf.scope.Declare(s.Name, targetType); err != nil {
 			return inf.nodeErr(s, "%s", err.Error())
 		}
+		inf.noteDecl(inf.scope, s.Name, DeclKey{Kind: DeclVar, Node: s}, wasDeclared, RefKey{Node: s, Kind: RefRebind}, -1)
 		return nil
 
 	case *ast.UnpackDecl:
@@ -1435,9 +1445,11 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					return inf.nodeErr(s, "duplicate variable %s in unpack pattern", name)
 				}
 				seenNames[name] = true
+				wasDeclared := inf.declaredHere(inf.scope, name)
 				if err := inf.scope.Declare(name, elemTypes[i]); err != nil {
 					return inf.nodeErr(s, "%s", err.Error())
 				}
+				inf.noteDecl(inf.scope, name, DeclKey{Kind: DeclPatternElem, Node: s.Pattern, Index: i}, wasDeclared, RefKey{Node: s.Pattern, Kind: RefRebind, Index: i}, -1)
 			}
 		}
 		if s.Pattern.RestName != "" && s.Pattern.RestName != "_" {
@@ -1445,9 +1457,11 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				return inf.nodeErr(s, "duplicate variable %s in unpack pattern", s.Pattern.RestName)
 			}
 			seenNames[s.Pattern.RestName] = true
+			wasDeclared := inf.declaredHere(inf.scope, s.Pattern.RestName)
 			if err := inf.scope.Declare(s.Pattern.RestName, restType); err != nil {
 				return inf.nodeErr(s, "%s", err.Error())
 			}
+			inf.noteDecl(inf.scope, s.Pattern.RestName, DeclKey{Kind: DeclPatternRest, Node: s.Pattern}, wasDeclared, RefKey{Node: s.Pattern, Kind: RefRebind, Index: -1}, -1)
 		}
 		return nil
 
@@ -1462,6 +1476,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
 				_ = tpScope.Declare(tp.Name, tpType)
+				inf.noteDecl(tpScope, tp.Name, DeclKey{Kind: DeclTypeParam, TypeParam: &s.TypeParams[i]}, false, RefKey{}, -1)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -1620,12 +1635,15 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if origScope != nil {
 			declScope = origScope
 		}
+		fnWasDeclared := inf.declaredHere(declScope, s.Name)
 		if err := declScope.Declare(s.Name, fnType); err != nil {
 			if origScope != nil {
 				inf.scope = origScope
 			}
 			return inf.nodeErr(s, "%s", err.Error())
 		}
+
+		inf.noteDecl(declScope, s.Name, DeclKey{Kind: DeclFunc, Node: s}, fnWasDeclared, RefKey{Node: s, Kind: RefRebind}, -1)
 
 		// Create child scope for function parameters and body (shadowing allowed)
 		childScope := NewScope(inf.scope)
@@ -1636,6 +1654,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				}
 				return inf.nodeErr(s, "duplicate parameter '%s' in function '%s'", p.Name, s.Name)
 			}
+			inf.noteDecl(childScope, p.Name, DeclKey{Kind: DeclParam, Param: &s.Params[i]}, false, RefKey{}, -1)
 		}
 		if s.BlockParam != nil {
 			if err := childScope.Declare(s.BlockParam.Name, blockT); err != nil {
@@ -1644,6 +1663,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				}
 				return inf.nodeErr(s, "duplicate parameter '&%s' in function '%s'", s.BlockParam.Name, s.Name)
 			}
+			inf.noteDecl(childScope, s.BlockParam.Name, DeclKey{Kind: DeclParam, Param: s.BlockParam}, false, RefKey{}, -1)
 		}
 
 		prevScope := inf.scope
@@ -1726,6 +1746,9 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if err != nil {
 			return err
 		}
+		if inf.rec != nil {
+			inf.noteMember(s, s.Member, targetT)
+		}
 		effTargetT := targetT
 		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
 			effTargetT = tp.Constraint
@@ -1778,6 +1801,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
 				_ = tpScope.Declare(tp.Name, tpType)
+				inf.noteDecl(tpScope, tp.Name, DeclKey{Kind: DeclTypeParam, TypeParam: &s.TypeParams[i]}, false, RefKey{}, -1)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -1810,11 +1834,21 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if origScope != nil {
 			declScope = origScope
 		}
+		stWasDeclared := inf.declaredHere(declScope, s.Name)
 		if err := declScope.Declare(s.Name, st); err != nil {
 			if origScope != nil {
 				inf.scope = origScope
 			}
 			return inf.nodeErr(s, "%s", err.Error())
+		}
+		structDecl := -1
+		if inf.rec != nil {
+			if stWasDeclared {
+				inf.noteDecl(declScope, s.Name, DeclKey{Kind: DeclStruct, Node: s}, true, RefKey{Node: s, Kind: RefRebind}, -1)
+			} else {
+				structDecl = inf.noteStruct(s, st)
+				declScope.setOrigin(s.Name, structDecl)
+			}
 		}
 
 		// Process fields
@@ -1890,6 +1924,13 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 			for fName, fType := range st.Fields {
 				_ = methodScope.Declare(fName, fType)
 			}
+			if inf.rec != nil && structDecl >= 0 {
+				for i, f := range s.Fields {
+					if fd, ok := inf.rec.DeclIndex(DeclKey{Kind: DeclField, Node: s, Index: i}); ok && inf.rec.members[structDecl][f.Name] == fd {
+						methodScope.setOrigin(f.Name, fd)
+					}
+				}
+			}
 
 			var mTypeParams []TypeParamDef
 			prevInfScope := inf.scope
@@ -1899,6 +1940,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				for i, tp := range m.TypeParams {
 					tpTypes[i] = &TypeParamType{Name: tp.Name}
 					_ = mScope.Declare(tp.Name, tpTypes[i])
+					inf.noteDecl(mScope, tp.Name, DeclKey{Kind: DeclTypeParam, TypeParam: &m.TypeParams[i]}, false, RefKey{}, -1)
 				}
 				inf.scope = mScope
 				mTypeParams = make([]TypeParamDef, len(m.TypeParams))
@@ -1955,7 +1997,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 
 			isVariadic := false
 			callerParamTypes := make([]Type, 0, len(m.Params))
-			for _, p := range m.Params {
+			for pi, p := range m.Params {
 				if p.Name == "self" {
 					continue
 				}
@@ -1999,6 +2041,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 					callerParamTypes = append(callerParamTypes, pType)
 					_ = methodScope.Declare(p.Name, pType)
 				}
+				inf.noteDecl(methodScope, p.Name, DeclKey{Kind: DeclParam, Param: &m.Params[pi]}, false, RefKey{}, -1)
 			}
 
 			minArity := 0
@@ -2035,6 +2078,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				}
 				blockOpt = (m.BlockParam.DefaultValue != nil)
 				_ = methodScope.Declare(m.BlockParam.Name, blockT)
+				inf.noteDecl(methodScope, m.BlockParam.Name, DeclKey{Kind: DeclParam, Param: m.BlockParam}, false, RefKey{}, -1)
 			}
 
 			var declaredRetType Type = TypeUnknown
@@ -2336,6 +2380,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				tpType := &TypeParamType{Name: tp.Name}
 				tpTypes[i] = tpType
 				_ = tpScope.Declare(tp.Name, tpType)
+				inf.noteDecl(tpScope, tp.Name, DeclKey{Kind: DeclTypeParam, TypeParam: &s.TypeParams[i]}, false, RefKey{}, -1)
 			}
 			inf.scope = tpScope
 			typeParamDefs = make([]TypeParamDef, len(s.TypeParams))
@@ -2406,11 +2451,22 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if origScope != nil {
 			declScope = origScope
 		}
+		ifWasDeclared := inf.declaredHere(declScope, s.Name)
 		if err := declScope.Declare(s.Name, iface); err != nil {
 			if origScope != nil {
 				inf.scope = origScope
 			}
 			return inf.nodeErr(s, "%s", err.Error())
+		}
+		if inf.rec != nil {
+			if ifWasDeclared {
+				inf.noteDecl(declScope, s.Name, DeclKey{Kind: DeclInterface, Node: s}, true, RefKey{Node: s, Kind: RefRebind}, -1)
+			} else {
+				inf.noteInterface(s, iface)
+				if d, ok := inf.rec.DeclIndex(DeclKey{Kind: DeclInterface, Node: s}); ok {
+					declScope.setOrigin(s.Name, d)
+				}
+			}
 		}
 
 		// Next, process direct methods on interface
@@ -2423,6 +2479,7 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				for i, tp := range m.TypeParams {
 					tpTypes[i] = &TypeParamType{Name: tp.Name}
 					_ = mScope.Declare(tp.Name, tpTypes[i])
+					inf.noteDecl(mScope, tp.Name, DeclKey{Kind: DeclTypeParam, TypeParam: &m.TypeParams[i]}, false, RefKey{}, -1)
 				}
 				inf.scope = mScope
 				mTypeParams = make([]TypeParamDef, len(m.TypeParams))
@@ -2633,6 +2690,9 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 				inf.modules[mod.Name] = mod
 			}
 		}
+		if inf.rec != nil {
+			inf.noteImport(s)
+		}
 		return nil
 	case *ast.ModuleDecl:
 		return nil
@@ -2727,6 +2787,9 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 	case *ast.ForceExpr:
 		return inf.inferExpr(e.Expr)
 	case *ast.Identifier:
+		if inf.rec != nil {
+			inf.noteIdent(e)
+		}
 		if t, ok := inf.scope.Lookup(e.Name); ok {
 			return t, nil
 		}
@@ -3752,6 +3815,9 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		if err != nil {
 			return nil, err
 		}
+		if inf.rec != nil {
+			inf.noteMember(e, e.Member, targetT)
+		}
 		effTargetT := targetT
 		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
 			effTargetT = tp.Constraint
@@ -3961,6 +4027,9 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		}
 		return TypeUnknown, nil
 	case *ast.ModuleAccessExpr:
+		if inf.rec != nil {
+			inf.noteModuleAccess(e)
+		}
 		if mod, ok := inf.modules[e.Module]; ok {
 			if len(e.Member) == 0 {
 				return nil, inf.nodeErr(e, "empty member name in module access")
@@ -4033,6 +4102,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		childScope := NewScope(inf.scope)
 		for i, p := range e.Params {
 			_ = childScope.Declare(p.Name, paramTypes[i])
+			inf.noteDecl(childScope, p.Name, DeclKey{Kind: DeclParam, Param: &e.Params[i]}, false, RefKey{}, -1)
 		}
 
 		closureCtx := &breakTargetCtx{
@@ -5062,7 +5132,7 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 	hasFalse := false
 	var coveredTypes []Type
 
-	for _, c := range e.Cases {
+	for ci, c := range e.Cases {
 		caseScope := NewScope(inf.scope)
 		if c.RegexPattern != nil {
 			if err := ValidateRegex(c.RegexPattern.Pattern, c.RegexPattern.Flags); err != nil {
@@ -5172,6 +5242,9 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 			}
 		}
 
+		if inf.rec != nil {
+			inf.noteCaseBindings(e, ci, &c, caseScope)
+		}
 		prevScope := inf.scope
 		inf.scope = caseScope
 
