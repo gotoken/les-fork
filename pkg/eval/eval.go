@@ -5688,6 +5688,50 @@ func hasTopLevelComma(s string) bool {
 }
 
 func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) bool {
+	return checkValueMatchesTypeVia(nil, val, typeAnnot, optEnv...)
+}
+
+// embeddedMatchAssignable decides whether a match of the embedded instance
+// target, reached by descending from the outer instance root, may count as a
+// match of root itself. It applies the static rule that decides whether root's
+// type may be used where target's type is expected (types.IsAssignableTo,
+// which includes the embedded-struct member compatibility check), so that
+// `is` and static assignability agree. It looks at types only and never
+// forces values. root == nil means target was matched directly. If either
+// struct has no static type (statically unknown, e.g. inference could not
+// type it), it is not known to be incompatible and the match is kept.
+func embeddedMatchAssignable(root, target *StructInstance) bool {
+	if root == nil || target == nil || root == target {
+		return true
+	}
+	rt := instanceStructType(root)
+	tt := instanceStructType(target)
+	if rt == nil || tt == nil {
+		return true
+	}
+	return types.IsAssignableTo(rt, tt)
+}
+
+func embeddedRoot(root, si *StructInstance) *StructInstance {
+	if root != nil {
+		return root
+	}
+	return si
+}
+
+func instanceStructType(si *StructInstance) *types.StructType {
+	if si == nil || si.Def == nil || si.Def.StructType == nil {
+		return nil
+	}
+	st, _ := si.Def.StructType.(*types.StructType)
+	return st
+}
+
+// checkValueMatchesTypeVia is checkValueMatchesType for a value that may have
+// been reached by descending through embedded structs: root is the outermost
+// instance of that descent (nil at the top level). A struct match found below
+// root counts for root only if embeddedMatchAssignable allows it.
+func checkValueMatchesTypeVia(root *StructInstance, val Value, typeAnnot string, optEnv ...*Environment) bool {
 	typeAnnot = strings.TrimSpace(typeAnnot)
 	if typeAnnot == "" {
 		return true
@@ -6116,13 +6160,13 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 							allMatch = false
 							break
 						}
-						if allMatch {
+						if allMatch && embeddedMatchAssignable(root, si) {
 							return true
 						}
 					}
 				}
 				for _, emb := range si.Embedded {
-					if checkValueMatchesType(emb, typeAnnot, optEnv...) {
+					if checkValueMatchesTypeVia(embeddedRoot(root, si), emb, typeAnnot, optEnv...) {
 						return true
 					}
 				}
@@ -6177,11 +6221,11 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 
 		// Check struct type or embedded struct type
 		if si, ok := val.(*StructInstance); ok {
-			if si.Def.Name == typeAnnot {
+			if si.Def.Name == typeAnnot && embeddedMatchAssignable(root, si) {
 				return true
 			}
 			for _, emb := range si.Embedded {
-				if checkValueMatchesType(emb, typeAnnot, optEnv...) {
+				if checkValueMatchesTypeVia(embeddedRoot(root, si), emb, typeAnnot, optEnv...) {
 					return true
 				}
 			}
@@ -6230,7 +6274,7 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 								if structRoot.Origin != nil {
 									structRoot = structRoot.Origin
 								}
-								if siRoot == structRoot {
+								if siRoot == structRoot && embeddedMatchAssignable(root, si) {
 									return true
 								}
 								for _, emb := range si.Embedded {
@@ -6238,7 +6282,7 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 									if embRoot != nil && embRoot.Origin != nil {
 										embRoot = embRoot.Origin
 									}
-									if embRoot == structRoot {
+									if embRoot == structRoot && embeddedMatchAssignable(embeddedRoot(root, si), emb) {
 										return true
 									}
 								}

@@ -736,8 +736,8 @@ struct Point:
 - Structs can embed other structs anonymously by listing their type name in the struct body.
 - Inside a method, a bare field name refers to the field, but in a call a field whose type is not callable (including an embedded struct such as `Base` or `Box[Int]`) does not hide the outer function, generic function, builtin, or struct constructor of the same name: `Base(...)` and `Box[Int](...)` still construct `Base` and `Box[Int]`. Use `@Base` or bare `Base` without a call for the embedded field value.
 - Embedded fields and methods are automatically promoted to the outer struct.
-- An embedded type also participates in subtyping: an outer instance satisfies `is Inner`.
-- The type checker also accepts an outer struct value where an embedded struct type (direct or transitive) is expected, provided that every member of the embedded type that the outer struct shadows has a compatible type and none is ambiguous on the outer struct. The value is not converted, so member access still finds the outer struct's members first.
+- An embedded type also participates in subtyping, under one rule that the type checker (assignment, arguments, returns) and the run-time `is` / `match` share: an outer struct value is accepted where an embedded struct type (direct or transitive) is expected, and is an instance of it for `is`, provided that every member of the embedded type resolves on the outer struct, without ambiguity, to a compatible type. A member that the outer struct shadows with an incompatible type (for example `X: Int` shadowed by `X: String`), or that becomes ambiguous through several embeddings, therefore makes the outer struct not a subtype: `outer is Inner` is `false` and passing it where `Inner` is expected is a type error. What cannot be decided statically (`Unknown` member types, or a struct without a static type at run time) is not treated as incompatible.
+- The value is not converted: an outer instance that is accepted as the embedded type stays an instance of the outer struct, so member access still finds the outer struct's members first. Use `outer.Inner` to obtain the embedded instance explicitly.
 
 ```python
 struct Reader:
@@ -750,6 +750,15 @@ struct ReadCloser:
 rc = ReadCloser()
 print rc.Read()         # "read data" (promoted method)
 print rc is Reader      # true
+
+struct Inner:
+    v: Int
+struct Shadow:
+    Inner
+    v: String           # incompatible with Inner.v
+sh = Shadow(Inner: Inner(v: 1), v: "s")
+print sh is Inner       # false (v would be a String where Inner promises an Int)
+print sh.Inner is Inner # true
 ```
 
 #### Static Ambiguous Selector Detection
