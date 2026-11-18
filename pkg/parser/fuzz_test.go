@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -113,7 +114,12 @@ const (
 	childPlain    = "plain"
 	childMetadata = "metadata"
 
-	childPanicExit = 3
+	childPanicExit  = 3
+	childMemoryExit = 4
+
+	// childMemoryLimit stops a child whose parse keeps allocating (the
+	// existing parser's loops do), before it exhausts the machine.
+	childMemoryLimit = 512 << 20
 )
 
 type childResult int
@@ -141,8 +147,14 @@ func parseInChild(t *testing.T, src, mode string, limit time.Duration) (childRes
 	if ctx.Err() != nil {
 		return childTimeout, elapsed
 	}
-	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == childPanicExit {
-		return childPanic, elapsed
+	if ee, ok := err.(*exec.ExitError); ok {
+		switch ee.ExitCode() {
+		case childPanicExit:
+			return childPanic, elapsed
+		case childMemoryExit:
+			// Unbounded allocation: treated like not finishing.
+			return childTimeout, elapsed
+		}
 	}
 	if err != nil {
 		t.Fatalf("child process: %v", err)
@@ -164,6 +176,16 @@ func TestParseChild(t *testing.T) {
 	defer func() {
 		if recover() != nil {
 			os.Exit(childPanicExit)
+		}
+	}()
+	go func() {
+		var ms runtime.MemStats
+		for {
+			time.Sleep(20 * time.Millisecond)
+			runtime.ReadMemStats(&ms)
+			if ms.HeapAlloc > childMemoryLimit {
+				os.Exit(childMemoryExit)
+			}
 		}
 	}()
 	switch os.Getenv(childModeEnv) {
