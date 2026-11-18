@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"les/pkg/internal/benchcorpus"
+	"les/pkg/source"
 )
 
 type anyRange struct {
@@ -157,5 +158,76 @@ func TestSnapshotConcurrentQueries(t *testing.T) {
 		if got := <-done; got != want.String() {
 			t.Error("concurrent WriteJSON differs")
 		}
+	}
+}
+
+// TestReturnedValuesDoNotAliasSnapshot changes everything the query methods
+// return and checks that later queries are unaffected (review R1).
+func TestReturnedValuesDoNotAliasSnapshot(t *testing.T) {
+	src := "# Adds one.\ndef inc(n: Int) -> Int:\n    n + 1\n\nx: Int = \"s\"\n"
+	s, err := Analyze(Input{Source: src}, All())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotJSON := func() string {
+		var b bytes.Buffer
+		_ = s.WriteJSON(&b)
+		return b.String()
+	}
+	before := snapshotJSON()
+	clobber := func(sp *source.Span) {
+		if sp != nil {
+			*sp = source.Span{Start: 999, End: 999}
+		}
+	}
+	syms := s.Symbols()
+	if len(syms) == 0 {
+		t.Fatal("no symbols")
+	}
+	for i := range syms {
+		clobber(syms[i].NameSpan)
+		clobber(syms[i].DeclSpan)
+		syms[i].Name = "changed"
+	}
+	inc := s.SymbolAt(strings.Index(src, "inc"))
+	if !inc.Found {
+		t.Fatal("inc not found")
+	}
+	clobber(inc.Symbol.NameSpan)
+	clobber(inc.Symbol.DeclSpan)
+	one, _ := s.Symbol(inc.Symbol.ID)
+	clobber(one.NameSpan)
+	clobber(one.DeclSpan)
+	ref := s.SymbolAt(strings.LastIndex(src, "n + 1"))
+	clobber(ref.Symbol.NameSpan)
+	diags := s.Diagnostics()
+	if len(diags) == 0 || diags[0].Span == nil {
+		t.Fatalf("expected a type error with a span: %+v", diags)
+	}
+	for i := range diags {
+		clobber(diags[i].Span)
+	}
+	cs := s.Comments()
+	cs[0].Text = "changed"
+	as := s.Associations()
+	as[0].Comment = 42
+	doc, _ := s.Documentation(inc.Symbol.ID)
+	doc.Raw[0].Text = "changed"
+	doc.Comments[0] = 42
+	refs := s.References(inc.Symbol.ID)
+	_ = refs
+	all := s.AllReferences()
+	all[0].Span = source.Span{Start: 999, End: 999}
+	toks := s.Tokens()
+	toks[0].Span = source.Span{Start: 999, End: 999}
+
+	if after := snapshotJSON(); after != before {
+		t.Fatal("changing returned values changed the snapshot")
+	}
+	if def, ok := s.Definition(inc.Symbol.ID); !ok || src[def.Start:def.End] != "inc" {
+		t.Errorf("definition after mutation: %+v", def)
+	}
+	if again := s.Diagnostics(); again[0].Span.Start == 999 {
+		t.Error("diagnostic span aliased")
 	}
 }
