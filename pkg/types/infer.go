@@ -1746,18 +1746,27 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		if err != nil {
 			return err
 		}
-		if inf.rec != nil {
-			inf.noteMember(s, s.Member, targetT)
-		}
 		effTargetT := targetT
 		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
 			effTargetT = tp.Constraint
 		}
 		st, ok := effTargetT.(*StructType)
 		if !ok {
+			if inf.rec != nil {
+				inf.noteOtherMember(s, Unresolved, "cannot assign a member of "+fmt.Sprint(targetT))
+			}
 			return inf.nodeErr(s, "cannot assign member '%s' on non-struct type %s", s.Member, targetT)
 		}
 		expectedT, ok := st.Fields[s.Member]
+		if inf.rec != nil {
+			// Assignment looks only at the struct's own fields (no
+			// promotion), so the struct itself is the owner.
+			if ok {
+				inf.noteStructMember(s, s.Member, st, memberFound)
+			} else {
+				inf.noteStructMember(s, s.Member, nil, memberMissing)
+			}
+		}
 		if !ok {
 			return inf.nodeErr(s, "struct '%s' has no field '%s'", st.Name, s.Member)
 		}
@@ -3815,36 +3824,57 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		if inf.rec != nil {
-			inf.noteMember(e, e.Member, targetT)
-		}
 		effTargetT := targetT
 		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
 			effTargetT = tp.Constraint
 		}
 		if st, ok := effTargetT.(*StructType); ok {
-			return st.LookupMember(e.Member)
+			mt, owner, outcome, err := st.lookupMember(e.Member)
+			if inf.rec != nil {
+				inf.noteStructMember(e, e.Member, owner, outcome)
+			}
+			return mt, err
 		}
 		if it, ok := effTargetT.(*InterfaceType); ok {
 			resolvedIt := ResolveInterfaceForReceiver(it, targetT)
-			if mSig, ok := resolvedIt.LookupMethod(e.Member); ok {
+			mSig, _, ok := resolvedIt.lookupMethod(e.Member)
+			if inf.rec != nil {
+				// The declaring interface is taken from the unsubstituted
+				// type: resolving Self/defaults copies the interfaces but
+				// keeps their methods and embedding order.
+				_, owner, _ := it.lookupMethod(e.Member)
+				inf.noteInterfaceMember(e, e.Member, owner, ok)
+			}
+			if ok {
 				return mSig, nil
 			}
 			return nil, inf.nodeErr(e, "interface %s has no method '%s'", it.Name, e.Member)
 		}
 		if targetT == TypeUnknown {
+			if inf.rec != nil {
+				inf.noteOtherMember(e, Unresolved, "receiver type is unknown")
+			}
 			return TypeUnknown, nil
 		}
 		if bSig, ok := LookupBuiltinTypeMethod(targetT, e.Member); ok {
+			if inf.rec != nil {
+				inf.noteOtherMember(e, Builtin, targetT.String()+"."+e.Member)
+			}
 			return bSig, nil
 		}
 		if u, ok := targetT.(*UnionType); ok {
 			nonNilT := removeNilFromType(u)
 			if nonNilT != TypeNil {
 				if bSig, ok := LookupBuiltinTypeMethod(nonNilT, e.Member); ok {
+					if inf.rec != nil {
+						inf.noteOtherMember(e, Builtin, nonNilT.String()+"."+e.Member)
+					}
 					return bSig, nil
 				}
 			}
+		}
+		if inf.rec != nil {
+			inf.noteOtherMember(e, Unresolved, "no member "+e.Member+" on "+targetT.String())
 		}
 		return nil, inf.nodeErr(e, "cannot access member '%s' on non-struct/interface type %s", e.Member, targetT)
 	case *ast.NamedArgExpr:

@@ -604,3 +604,108 @@ func TestBuiltinTypeIgnoresShadowing(t *testing.T) {
 		}
 	}
 }
+
+// TestMemberResolutionFollowsTypeChecker: member references are the type
+// checker's own lookup results, observed (review R4). Each case was
+// reported differently by the earlier re-implementation (noted per case).
+func TestMemberResolutionFollowsTypeChecker(t *testing.T) {
+	type want struct {
+		at     string // text whose last occurrence starts the member name
+		status RefStatus
+		target string // "Container.Name" of the symbol, or the detail for builtins
+	}
+	cases := []struct {
+		name    string
+		src     string
+		partial bool
+		want    []want
+	}{
+		{
+			// Promotion is breadth-first: B.v at depth 1 wins over D.v at
+			// depth 2 (was: ambiguous).
+			name: "promotion by level",
+			src:  "struct D:\n    v: Int = 1\nstruct B:\n    v: Int = 2\nstruct C:\n    D\nstruct A:\n    B\n    C\na = A()\nq = a.v\n",
+			want: []want{{"v\n", RefResolved, "B.v"}},
+		},
+		{
+			name: "generic struct and embedded instance",
+			src:  "struct Box[T]:\n    v: T\n    def Get() -> T:\n        v\nstruct Outer:\n    Box[Int]\nb = Box[Int](v: 3)\nq = b.Get()\no = Outer()\nw = o.v\n",
+			want: []want{{"Get()\no", RefResolved, "Box.Get"}, {"v\n", RefResolved, "Box.v"}},
+		},
+		{
+			// A builtin method through T | Nil (was: unresolved).
+			name: "union with nil",
+			src:  "def f(s: String | Nil) -> Int:\n    s.Len()\n",
+			want: []want{{"Len", RefBuiltin, "String.Len"}},
+		},
+		{
+			// The implicit Type() method of structs (was: unresolved).
+			name: "Type method",
+			src:  "struct P:\n    x: Int = 0\np = P()\nn = p.Type()\n",
+			want: []want{{"Type", RefBuiltin, "Type"}},
+		},
+		{
+			// A method of an embedded interface (was: external).
+			name: "embedded interface",
+			src:  "interface Named:\n    Name(): String\ninterface Greeter:\n    Named\n    Greet(): String\ndef f(g: Greeter) -> String:\n    g.Name()\ndef h[T: Named](x: T) -> String:\n    x.Name()\n",
+			want: []want{{"Name()\ndef", RefResolved, "Named.Name"}, {"Name()\n", RefResolved, "Named.Name"}},
+		},
+		{
+			name: "Self in interface",
+			src:  "interface Cl:\n    Clone(): Self\ndef k(c: Cl) -> Cl:\n    c.Clone()\n",
+			want: []want{{"Clone()\n", RefResolved, "Cl.Clone"}},
+		},
+		{
+			name: "direct member hides promoted one",
+			src:  "struct Base:\n    id: Int = 0\nstruct C:\n    Base\n    id: String = \"\"\nc = C()\nz = c.id\n",
+			want: []want{{"id\n", RefResolved, "C.id"}},
+		},
+		{
+			// Assignment does not promote: the type checker rejects it
+			// (was: resolved to Base.id).
+			name:    "assignment to promoted field",
+			src:     "struct Base:\n    id: Int = 0\nstruct C:\n    Base\nc = C()\nc.id = 3\n",
+			partial: true,
+			want:    []want{{"id = 3", RefUnresolved, ""}},
+		},
+		{
+			name: "builtin type method",
+			src:  "x = \"abc\".Len()\n",
+			want: []want{{"Len", RefBuiltin, "String.Len"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := analyze(t, c.src)
+			if (s.Status() == Partial) != c.partial {
+				t.Fatalf("status %v, diagnostics %v", s.Status(), s.Diagnostics())
+			}
+			for _, w := range c.want {
+				off := strings.LastIndex(c.src, w.at)
+				if off < 0 {
+					t.Fatalf("no %q in source", w.at)
+				}
+				var got *Reference
+				for _, r := range s.AllReferences() {
+					if r.Kind == "member" && r.Span.Start == off {
+						r := r
+						got = &r
+					}
+				}
+				if got == nil {
+					t.Errorf("%q: no member reference", w.at)
+					continue
+				}
+				target := got.Detail
+				if got.Symbol != "" && got.Status == RefResolved {
+					sym, _ := s.Symbol(got.Symbol)
+					cont, _ := s.Symbol(sym.Container)
+					target = cont.Name + "." + sym.Name
+				}
+				if got.Status != w.status || (w.target != "" && target != w.target) {
+					t.Errorf("%q: %s %s, want %s %s", w.at, got.Status, target, w.status, w.target)
+				}
+			}
+		})
+	}
+}

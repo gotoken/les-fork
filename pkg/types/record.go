@@ -145,7 +145,6 @@ type Recorder struct {
 	ifaces  map[*InterfaceType]int // interface type -> DeclInterface index
 	imports map[string]int         // module alias -> DeclImport index
 	members map[int]map[string]int // struct/interface decl -> member name -> decl
-	direct  map[int]map[string]bool
 }
 
 // NewRecorder returns an empty recorder.
@@ -157,7 +156,6 @@ func NewRecorder() *Recorder {
 		ifaces:  make(map[*InterfaceType]int),
 		imports: make(map[string]int),
 		members: make(map[int]map[string]int),
-		direct:  make(map[int]map[string]bool),
 	}
 }
 
@@ -276,13 +274,11 @@ func (inf *Inferencer) noteStruct(s *ast.StructDef, st *StructType) int {
 	d := r.decl(DeclKey{Kind: DeclStruct, Node: s}, s.Name, st, -1)
 	r.structs[st] = d
 	mem := make(map[string]int)
-	direct := make(map[string]bool)
 	for i, f := range s.Fields {
 		fd := r.decl(DeclKey{Kind: DeclField, Node: s, Index: i}, f.Name, nil, d)
 		if _, dup := mem[f.Name]; !dup || !f.IsEmbedded {
 			mem[f.Name] = fd
 		}
-		direct[f.Name] = true
 	}
 	for _, m := range s.Methods {
 		if _, dup := mem[m.Name]; !dup {
@@ -290,10 +286,8 @@ func (inf *Inferencer) noteStruct(s *ast.StructDef, st *StructType) int {
 		} else {
 			r.decl(DeclKey{Kind: DeclMethod, Node: m}, m.Name, nil, d)
 		}
-		direct[m.Name] = true
 	}
 	r.members[d] = mem
-	r.direct[d] = direct
 	return d
 }
 
@@ -323,85 +317,95 @@ func (r *Recorder) structDecl(st *StructType) (int, bool) {
 	return -1, false
 }
 
-// memberDecl resolves member on struct type st following the promotion
-// rules: a member declared directly wins; otherwise exactly one embedded
-// struct (searched depth-first by level) must provide it.
-func (r *Recorder) memberDecl(st *StructType, member string, depth int) (RefStatus, int, string) {
-	if depth > 32 {
-		return Unresolved, -1, "embedding too deep"
-	}
-	d, ok := r.structDecl(st)
-	if !ok {
-		return External, -1, "struct " + st.Name + " is declared outside the analyzed program"
-	}
-	if r.direct[d][member] {
-		return Resolved, r.members[d][member], ""
-	}
-	var found []int
-	status := Unresolved
-	detail := "no member " + member
-	for _, emb := range st.Embedded {
-		s, md, det := r.memberDecl(emb, member, depth+1)
-		switch s {
-		case Resolved:
-			found = append(found, md)
-		case External, Ambiguous:
-			status, detail = s, det
+// ifaceDecl maps an interface type (or an instantiation of a generic one)
+// to its declaration.
+func (r *Recorder) ifaceDecl(it *InterfaceType) (int, bool) {
+	for it != nil {
+		if d, ok := r.ifaces[it]; ok {
+			return d, true
 		}
+		it = it.GenericOrigin
 	}
-	if len(found) == 1 && status == Unresolved {
-		return Resolved, found[0], ""
-	}
-	if len(found) > 1 || (len(found) == 1 && status == Ambiguous) {
-		return Ambiguous, -1, "member " + member + " is promoted from several embedded structs"
-	}
-	if len(found) == 1 {
-		// One embedded struct declares it and another is external: the
-		// external one may declare it too.
-		return Ambiguous, -1, "member " + member + " may also come from an external embedded struct"
-	}
-	return status, -1, detail
+	return -1, false
 }
 
-// noteMember records the resolution of a member access on a value of type
-// targetT.
-func (inf *Inferencer) noteMember(node ast.Node, member string, targetT Type) {
+// The member hooks below record the result of the type checker's own member
+// lookup (StructType.lookupMember, InterfaceType.lookupMethod, the builtin
+// method table); they never resolve a member by themselves.
+
+// noteStructMember records a member access the type checker resolved on a
+// struct: owner is the struct (the receiver or an embedded one) that
+// declares the member.
+func (inf *Inferencer) noteStructMember(node ast.Node, member string, owner *StructType, outcome memberOutcome) {
 	r := inf.rec
 	k := RefKey{Node: node, Kind: RefMember}
-	eff := targetT
-	if tp, ok := eff.(*TypeParamType); ok && tp.Constraint != nil {
-		eff = tp.Constraint
-	}
-	switch t := eff.(type) {
-	case *StructType:
-		s, d, det := r.memberDecl(t, member, 0)
-		r.ref(k, s, d, det)
-	case *InterfaceType:
-		for it := t; ; {
-			if d, ok := r.ifaces[it]; ok {
-				if md, ok := r.members[d][member]; ok {
-					r.ref(k, Resolved, md, "")
-					return
-				}
-			}
-			break
-		}
-		if _, ok := t.LookupMethod(member); ok {
-			r.ref(k, External, -1, "method "+member+" of interface "+t.Name+" is not declared directly in the analyzed program")
-			return
-		}
-		r.ref(k, Unresolved, -1, "no method "+member)
+	switch outcome {
+	case memberAmbiguous:
+		r.ref(k, Ambiguous, -1, "member "+member+" is promoted from several embedded structs")
+	case memberTypeName:
+		r.ref(k, Builtin, -1, "Type")
+	case memberMissing:
+		r.ref(k, Unresolved, -1, "no member "+member)
 	default:
-		if targetT == nil || targetT == TypeUnknown {
-			r.ref(k, Unresolved, -1, "receiver type is unknown")
+		d, ok := r.structDecl(owner)
+		if !ok {
+			r.ref(k, External, -1, "struct "+owner.Name+" is declared outside the analyzed program")
 			return
 		}
-		if _, ok := LookupBuiltinTypeMethod(targetT, member); ok {
-			r.ref(k, Builtin, -1, targetT.String()+"."+member)
+		if md, ok := r.members[d][member]; ok {
+			r.ref(k, Resolved, md, "")
 			return
 		}
-		r.ref(k, Unresolved, -1, "no member "+member+" on "+targetT.String())
+		r.ref(k, Unresolved, -1, "member "+member+" of "+owner.Name+" has no recorded declaration")
 	}
+}
+
+// noteInterfaceMember records a method access the type checker resolved on
+// an interface; owner is the declaring interface (nil for Type()).
+func (inf *Inferencer) noteInterfaceMember(node ast.Node, member string, owner *InterfaceType, found bool) {
+	r := inf.rec
+	k := RefKey{Node: node, Kind: RefMember}
+	switch {
+	case !found:
+		r.ref(k, Unresolved, -1, "no method "+member)
+	case owner == nil:
+		r.ref(k, Builtin, -1, "Type")
+	default:
+		if md, ok := r.ifaceMethodDecl(owner, member, 0); ok {
+			r.ref(k, Resolved, md, "")
+			return
+		}
+		r.ref(k, External, -1, "method "+member+" of interface "+owner.Name+" is not declared in the analyzed program")
+	}
+}
+
+// ifaceMethodDecl finds the declaration of method member of interface it.
+// Type checking copies the methods of embedded interfaces into the
+// embedding interface's Methods (the first embedded interface, in order,
+// that has the method wins; see the InterfaceDef case of inferStmt), so a
+// method found on it may be declared by an embedded interface: follow the
+// same order to it.
+func (r *Recorder) ifaceMethodDecl(it *InterfaceType, member string, depth int) (int, bool) {
+	if it == nil || depth > 32 {
+		return -1, false
+	}
+	if d, ok := r.ifaceDecl(it); ok {
+		if md, ok := r.members[d][member]; ok {
+			return md, true
+		}
+	}
+	for _, emb := range it.Embedded {
+		if _, ok := emb.Methods[member]; ok {
+			return r.ifaceMethodDecl(emb, member, depth+1)
+		}
+	}
+	return -1, false
+}
+
+// noteOtherMember records a member access that is not a struct or interface
+// member: a builtin type's method or an unresolved access.
+func (inf *Inferencer) noteOtherMember(node ast.Node, status RefStatus, detail string) {
+	inf.rec.ref(RefKey{Node: node, Kind: RefMember}, status, -1, detail)
 }
 
 // noteImport records an import declaration under each name it binds.
