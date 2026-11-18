@@ -3,5 +3,5 @@ package parser_test
 import "les/pkg/parser"
 
 func metadataOptionSets() []parser.Options {
-	return []parser.Options{{Comments: true}}
+	return []parser.Options{{Comments: true}, {Ranges: true}, {Comments: true, Ranges: true}}
 }
