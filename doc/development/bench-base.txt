@@ -1,0 +1,138 @@
+goos: linux
+goarch: amd64
+pkg: les/pkg/lexer
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkLex/few_comments-4         	   41510	     29731 ns/op	  31.62 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   41836	     29261 ns/op	  32.12 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   40795	     29733 ns/op	  31.61 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   38991	     30746 ns/op	  30.57 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   40070	     30074 ns/op	  31.26 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   39541	     29593 ns/op	  31.76 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   38806	     30854 ns/op	  30.47 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   38355	     30246 ns/op	  31.08 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   40376	     30427 ns/op	  30.89 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/few_comments-4         	   43173	     28646 ns/op	  32.81 MB/s	    9793 B/op	     221 allocs/op
+BenchmarkLex/many_comments-4        	   37573	     31418 ns/op	  59.26 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   36954	     31597 ns/op	  58.93 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   38485	     31543 ns/op	  59.03 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   35024	     33093 ns/op	  56.27 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   37750	     32493 ns/op	  57.31 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   36730	     32319 ns/op	  57.61 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   34682	     34511 ns/op	  53.95 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   35206	     33641 ns/op	  55.35 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   37482	     34117 ns/op	  54.58 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/many_comments-4        	   38206	     33027 ns/op	  56.38 MB/s	   13938 B/op	     222 allocs/op
+BenchmarkLex/unicode_layout-4       	  136922	      9118 ns/op	  39.48 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  130636	      9626 ns/op	  37.40 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  133642	      9321 ns/op	  38.62 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  131396	      8937 ns/op	  40.28 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  113167	      9999 ns/op	  36.00 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  131888	     10126 ns/op	  35.55 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  119793	      9371 ns/op	  38.42 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  134143	      9493 ns/op	  37.92 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  118627	      9155 ns/op	  39.32 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/unicode_layout-4       	  131522	      9575 ns/op	  37.60 MB/s	    3096 B/op	      75 allocs/op
+BenchmarkLex/long200-4              	     704	   1675201 ns/op	  40.28 MB/s	  627323 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     676	   1695287 ns/op	  39.80 MB/s	  627324 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     674	   1781978 ns/op	  37.87 MB/s	  627322 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     734	   1749120 ns/op	  38.58 MB/s	  627328 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     664	   1818099 ns/op	  37.12 MB/s	  627328 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     726	   1681273 ns/op	  40.14 MB/s	  627324 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     675	   1704048 ns/op	  39.60 MB/s	  627328 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     768	   1659774 ns/op	  40.66 MB/s	  627327 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     745	   1731687 ns/op	  38.97 MB/s	  627328 B/op	   12605 allocs/op
+BenchmarkLex/long200-4              	     753	   1636126 ns/op	  41.24 MB/s	  627326 B/op	   12605 allocs/op
+PASS
+ok  	les/pkg/lexer	48.484s
+goos: linux
+goarch: amd64
+pkg: les/pkg/parser
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkParse/few_comments-4         	   20598	     54339 ns/op	  17.30 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   23607	     49996 ns/op	  18.80 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   23371	     51175 ns/op	  18.37 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   25784	     48472 ns/op	  19.39 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   26221	     45433 ns/op	  20.69 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   25230	     48713 ns/op	  19.30 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   25426	     46907 ns/op	  20.04 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   24806	     48279 ns/op	  19.47 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   23695	     53881 ns/op	  17.45 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/few_comments-4         	   24704	     49106 ns/op	  19.14 MB/s	   21940 B/op	     479 allocs/op
+BenchmarkParse/many_comments-4        	   19592	     59767 ns/op	  31.15 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   20672	     58751 ns/op	  31.69 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   21291	     55373 ns/op	  33.63 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   21700	     54148 ns/op	  34.39 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   21723	     55058 ns/op	  33.82 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   20680	     58175 ns/op	  32.01 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   22102	     54030 ns/op	  34.46 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   21260	     57952 ns/op	  32.13 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   21901	     56268 ns/op	  33.09 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/many_comments-4        	   20610	     59120 ns/op	  31.50 MB/s	   26101 B/op	     481 allocs/op
+BenchmarkParse/unicode_layout-4       	   72092	     15936 ns/op	  22.59 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   72822	     16362 ns/op	  22.00 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   77869	     15527 ns/op	  23.19 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   81080	     16443 ns/op	  21.89 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   88111	     15310 ns/op	  23.51 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   63842	     16524 ns/op	  21.79 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   75696	     15595 ns/op	  23.08 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   78394	     17344 ns/op	  20.76 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   74466	     15778 ns/op	  22.82 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/unicode_layout-4       	   85022	     16809 ns/op	  21.42 MB/s	    7233 B/op	     157 allocs/op
+BenchmarkParse/long200-4              	     400	   2980526 ns/op	  22.64 MB/s	 1301335 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     388	   3004962 ns/op	  22.46 MB/s	 1301333 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     386	   2844715 ns/op	  23.72 MB/s	 1301328 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     430	   2981617 ns/op	  22.63 MB/s	 1301330 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     393	   3030251 ns/op	  22.27 MB/s	 1301348 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     384	   2855187 ns/op	  23.63 MB/s	 1301327 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     442	   2734671 ns/op	  24.68 MB/s	 1301335 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     464	   2834307 ns/op	  23.81 MB/s	 1301341 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     453	   2746922 ns/op	  24.57 MB/s	 1301331 B/op	   27610 allocs/op
+BenchmarkParse/long200-4              	     375	   2950552 ns/op	  22.87 MB/s	 1301331 B/op	   27610 allocs/op
+PASS
+ok  	les/pkg/parser	48.441s
+goos: linux
+goarch: amd64
+pkg: les/pkg/types
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkParseInfer/few_comments-4         	   10422	    112857 ns/op	   8.33 MB/s	   72367 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	    9908	    110758 ns/op	   8.49 MB/s	   72366 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    107388 ns/op	   8.75 MB/s	   72367 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    110821 ns/op	   8.48 MB/s	   72367 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10582	    114614 ns/op	   8.20 MB/s	   72366 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	    8799	    117990 ns/op	   7.97 MB/s	   72367 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    109858 ns/op	   8.56 MB/s	   72366 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    109966 ns/op	   8.55 MB/s	   72366 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    116421 ns/op	   8.07 MB/s	   72366 B/op	     970 allocs/op
+BenchmarkParseInfer/few_comments-4         	   10000	    120169 ns/op	   7.82 MB/s	   72367 B/op	     970 allocs/op
+BenchmarkParseInfer/many_comments-4        	    9093	    112146 ns/op	  16.60 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	    9789	    120983 ns/op	  15.39 MB/s	   76528 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	   10000	    131879 ns/op	  14.12 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	   10000	    123851 ns/op	  15.03 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	   10000	    137091 ns/op	  13.58 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	    9859	    120634 ns/op	  15.44 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	    9032	    125141 ns/op	  14.88 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	   10000	    119249 ns/op	  15.61 MB/s	   76528 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	    8775	    130459 ns/op	  14.27 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/many_comments-4        	    8886	    126219 ns/op	  14.75 MB/s	   76527 B/op	     972 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   28338	     43467 ns/op	   8.28 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   29131	     43803 ns/op	   8.22 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   26713	     44345 ns/op	   8.12 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   29013	     43129 ns/op	   8.35 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   26676	     43734 ns/op	   8.23 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   27972	     43178 ns/op	   8.34 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   25839	     44447 ns/op	   8.10 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   28543	     42951 ns/op	   8.38 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   27664	     43028 ns/op	   8.37 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/unicode_layout-4       	   27724	     44912 ns/op	   8.02 MB/s	   36383 B/op	     430 allocs/op
+BenchmarkParseInfer/long200-4              	     196	   6131796 ns/op	  11.00 MB/s	 3393096 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     195	   5852570 ns/op	  11.53 MB/s	 3393934 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     202	   6217079 ns/op	  10.85 MB/s	 3393093 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     187	   6405283 ns/op	  10.54 MB/s	 3393127 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     184	   6391111 ns/op	  10.56 MB/s	 3393118 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     187	   6290900 ns/op	  10.73 MB/s	 3393105 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     189	   6673788 ns/op	  10.11 MB/s	 3393135 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     184	   6529236 ns/op	  10.34 MB/s	 3393524 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     187	   6121493 ns/op	  11.02 MB/s	 3393091 B/op	   45693 allocs/op
+BenchmarkParseInfer/long200-4              	     184	   6318451 ns/op	  10.68 MB/s	 3393565 B/op	   45693 allocs/op
+PASS
+ok  	les/pkg/types	47.270s

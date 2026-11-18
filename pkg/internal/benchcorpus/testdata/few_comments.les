@@ -1,0 +1,51 @@
+struct Point:
+    x: Int = 0
+    y: Int = 0
+
+    def DistSq() -> Int:
+        x * x + y * y
+
+    def Add(other: Point) -> Point:
+        Point(x: @x + other.x, y: @y + other.y)
+
+interface Shape:
+    Area(): Int
+
+struct Rect:
+    w: Int
+    h: Int
+
+    def Area() -> Int:
+        @w * @h
+
+def sum_to(n: Int) -> Int:
+    total = 0
+    if n <= 0:
+        return 0
+    n + sum_to(n - 1)
+
+def classify(v: Int | String) -> String:
+    match v:
+        case Int:
+            "int"
+        case String:
+            "string"
+
+def apply(fn: (Int) -> Int, val: Int): Int:
+    fn(val)
+
+def each_int(items: (Int, ...), fn: (Int) -> ()): ():
+    (head, ...tail) = items
+    fn(head)
+    if tail.Len() > 0:
+        each_int(tail, fn)
+
+p = Point(3, 4)
+q = p.Add(Point(1, 1))
+r = Rect(w: 2, h: 5)
+double = |x: Int|: x * 2
+total = apply(double, 21) + sum_to(10)
+label = classify(total)
+d = {"a": 1, "b": 2}
+t = (1, 2, 3)
+shown = total > 10 ? "big" : "small"

@@ -1,0 +1,17 @@
+def abs(x: Int) -> Int: +; if x < 0: +; -x -; else: +; x;;
+
+# 日本語のコメント
+def greet(名前: String) -> String:
+	"こんにちは、" + 名前 + " 🎉" # 絵文字
+
+total = 10 + \
+        20 + \   # 継続
+        30
+
+def add(a: Int, \
+        b: Int): Int:
+    a + b
+
+msg = greet("世界")
+n = abs(-5) + add(1, 2) + total
+x = 1; y = 2; z = x + y
