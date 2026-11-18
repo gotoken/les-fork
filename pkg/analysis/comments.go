@@ -85,8 +85,13 @@ type Association struct {
 	BlankLinesAfter int
 }
 
-// Documentation is the documentation comment of a declaration under the v1
-// convention (see doc/development/code-analysis-doc-comments.md).
+// Documentation is the documentation comment of a declaration. This is a
+// convention of the analysis tools, not of the language: a declaration that
+// starts its line (module, def, struct and its fields, interface and its
+// method signatures, a variable's first assignment) is documented by the run
+// of its leading comments on consecutive lines, at the same indentation,
+// ending on the line directly above it. A blank line ends the run; trailing
+// comments and comments inside expressions never document anything.
 type Documentation struct {
 	// Text is the comment text with '#' and at most one following space or
 	// tab removed from each line, lines joined by '\n'. It is not

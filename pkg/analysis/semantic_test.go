@@ -581,7 +581,7 @@ func TestTypeErrorSpanOnlyForThisFile(t *testing.T) {
 
 // TestBuiltinTypeIgnoresShadowing: a top-level declaration may rebind a
 // builtin's name in the root scope; the builtin symbol keeps the builtin's
-// type (review R3).
+// type.
 func TestBuiltinTypeIgnoresShadowing(t *testing.T) {
 	ref := analyze(t, "print(\"a\")\n")
 	want, ok := ref.Symbol("builtin:print")
@@ -606,8 +606,8 @@ func TestBuiltinTypeIgnoresShadowing(t *testing.T) {
 }
 
 // TestMemberResolutionFollowsTypeChecker: member references are the type
-// checker's own lookup results, observed (review R4). Each case was
-// reported differently by the earlier re-implementation (noted per case).
+// checker's own lookup results, observed. The cases marked "was:" are ones
+// that a separate re-implementation of the lookup rules got wrong.
 func TestMemberResolutionFollowsTypeChecker(t *testing.T) {
 	type want struct {
 		at     string // text whose last occurrence starts the member name

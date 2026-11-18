@@ -236,7 +236,7 @@ func TestIndexCommentsNeedsMetadata(t *testing.T) {
 }
 
 // TestContainerSweepMatchesScan checks the sweep used by IndexComments
-// against the plain scan, on valid and invalid inputs (review R5).
+// against the plain scan, on valid and invalid inputs.
 func TestContainerSweepMatchesScan(t *testing.T) {
 	inputs := []string{
 		benchcorpus.Long(5),

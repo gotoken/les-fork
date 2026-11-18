@@ -23,11 +23,11 @@ import (
 // caused by metadata collection. Each input is first parsed plainly in a
 // child process with a time limit, and skipped if that does not finish: the
 // existing parser loops forever, allocating, on some inputs (for example
-// "t:(" or "match v:\n    case [\n"; see
-// doc/development/code-analysis-progress.md, final verification), and a
-// stuck parse cannot be stopped from inside the test process. Parsing with
-// metadata is then checked in its own child process: if it does not finish
-// (or panics) where the plain parse did not, the test fails.
+// "t:(" or "match v:\n    case [\n", found while fuzzing and present before
+// metadata collection was added), and a stuck parse cannot be stopped from
+// inside the test process. Parsing with metadata is then checked in its own
+// child process: if it does not finish (or panics) where the plain parse did
+// not, the test fails.
 //
 //	go test ./pkg/parser -run '^$' -fuzz FuzzMetadataEquivalence -fuzztime 60s
 func FuzzMetadataEquivalence(f *testing.F) {

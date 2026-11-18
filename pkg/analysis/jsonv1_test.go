@@ -162,7 +162,7 @@ func TestSnapshotConcurrentQueries(t *testing.T) {
 }
 
 // TestReturnedValuesDoNotAliasSnapshot changes everything the query methods
-// return and checks that later queries are unaffected (review R1).
+// return and checks that later queries are unaffected.
 func TestReturnedValuesDoNotAliasSnapshot(t *testing.T) {
 	src := "# Adds one.\ndef inc(n: Int) -> Int:\n    n + 1\n\nx: Int = \"s\"\n"
 	s, err := Analyze(Input{Source: src}, All())
