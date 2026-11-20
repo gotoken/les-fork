@@ -14,11 +14,11 @@ import (
 //     semantics of embedding (composition only, or composition plus a safe
 //     subtype relation).
 //   - Distinguishing tests: properties whose expected result depends on the
-//     chosen semantics. Here: subtyping semantics, i.e. embedding keeps a
-//     subtype relation between named structs, but only when the embedded type
-//     can safely be used (every member of the embedded type resolves on the
-//     outer struct, unambiguously, to a compatible type). Only the wantErr
-//     column of these tests differs between candidates.
+//     chosen semantics. Here: composition semantics, i.e. embedding gives no
+//     subtype relation between named structs, so an outer struct is never
+//     assignable to an embedded struct type even when members match
+//     compatibly. Only the wantErr column of these tests differs between
+//     candidates.
 
 const embSemDefs = `struct Base:
     X: Int

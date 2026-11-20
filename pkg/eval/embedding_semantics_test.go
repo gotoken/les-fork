@@ -18,11 +18,10 @@ import (
 //   - Common invariants: properties that must hold under every candidate
 //     semantics of embedding.
 //   - Distinguishing tests: properties whose expected result depends on the
-//     chosen semantics. Here: subtyping semantics, i.e. embedding keeps a
-//     subtype relation between named structs, but only when the embedded type
-//     can safely be used (the static rule of types.IsAssignableTo, shared with
-//     the type checker). Only the expected output / wantErr of these tests
-//     differs between candidates.
+//     chosen semantics. Here: composition semantics, i.e. embedding gives no
+//     subtype relation between named structs, so is and match on an outer
+//     instance return false for any embedded struct type.
+//     Only the expected output of these tests differs between candidates.
 
 const embSemDefs = `struct Base:
     X: Int

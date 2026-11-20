@@ -260,9 +260,8 @@ f(Derived(Base: Base(k: 1)))
 	}
 }
 
-// Everything that is not a struct embedding the expected struct, or that
-// would let a shadowed or ambiguous member be reached through the embedded
-// type, stays a type mismatch.
+// Unrelated structs, reverse directions, named (non-embedded) fields, and
+// embeddings with shadowed or ambiguous members also remain type mismatches.
 func TestEmbeddedStructNotAssignable(t *testing.T) {
 	tests := []struct {
 		name string
