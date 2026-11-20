@@ -329,6 +329,93 @@ def get2(x: Base | Incompatible) -> Int:
 `)
 }
 
+// Extra: an interface is not satisfied when the required method is ambiguous
+// across embedded structs or shadowed by a non-callable field.
+func TestEmbeddingCommonInterfaceEdgeCases(t *testing.T) {
+	const defs = `interface Named:
+    Name(): String
+def show(n: Named) -> String:
+    n.Name()
+`
+	embSemWantErr(t, defs+`struct A:
+    def Name() -> String:
+        "a"
+struct B:
+    def Name() -> String:
+        "b"
+struct Both:
+    A
+    B
+show(Both(A: A(), B: B()))
+`, "type mismatch")
+	embSemWantOK(t, defs+`struct A:
+    def Name() -> String:
+        "a"
+struct B:
+    def Name() -> String:
+        "b"
+struct Resolved:
+    A
+    B
+    def Name() -> String:
+        "resolved"
+show(Resolved(A: A(), B: B()))
+`)
+	embSemWantErr(t, defs+`struct Base:
+    def Name() -> String:
+        "base"
+struct FieldShadow:
+    Base
+    Name: String
+show(FieldShadow(Base: Base(), Name: "s"))
+`, "type mismatch")
+}
+
+// Extra: else-branch flow narrowing removes Base from Base | Derived because
+// runtime `is` matches struct types nominally.
+func TestEmbeddingCommonFlowNarrowingElseBranch(t *testing.T) {
+	embSemWantOK(t, `struct Base:
+    X: Int
+struct Derived:
+    Base
+    Extra: Int
+def f(x: Base | Derived) -> Int:
+    if x is Base:
+        x.X
+    else:
+        x.Extra
+`)
+}
+
+var embSemGenModFiles = map[string]string{
+	"gen": `module gen
+
+struct Box[T]:
+    v: T
+
+def Unbox(b: Box[Int]) -> Int:
+    b.v
+`,
+}
+
+// Extra: module-qualified generic embedding promotes substituted members and
+// preserves the exact instantiated type on the embedded field.
+func TestEmbeddingCommonModuleQualifiedGeneric(t *testing.T) {
+	inf := wantIdentityOK(t, embSemGenModFiles, `
+import gen
+
+struct Child:
+    gen::Box[Int]
+
+c = Child(Box: gen::Box[Int](v: 7))
+v = c.v
+r = gen::Unbox(c.Box)
+`)
+	if got := embSemTypeOf(t, inf, "v"); got != TypeInt {
+		t.Errorf("c.v: expected Int, got %v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Distinguishing tests
 //
@@ -513,5 +600,19 @@ take(Both(A: A(X: 1), B: B(X: 2)))
     B
     X: Int
 take(Both(A: A(X: 1), B: B(X: 2), X: 3))
+`, "type mismatch")
+}
+
+// Extra: a module-qualified generic embedded struct is no subtype of the
+// instantiated embedded type.
+func TestEmbeddingDistinguishingModuleQualifiedGeneric(t *testing.T) {
+	wantIdentityErr(t, embSemGenModFiles, `
+import gen
+
+struct Child:
+    gen::Box[Int]
+
+c = Child(Box: gen::Box[Int](v: 7))
+r = gen::Unbox(c)
 `, "type mismatch")
 }

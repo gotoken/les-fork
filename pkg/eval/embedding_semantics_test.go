@@ -247,19 +247,13 @@ print (c.Base is base::Base), " ", c.id, " ", c.GetId(), " ", (c is Child)
 	}
 }
 
-func embSemRunWithModule(t *testing.T, mainCode string) string {
+func embSemRunWithModules(t *testing.T, files map[string]string, mainCode string) string {
 	t.Helper()
 	dir := t.TempDir()
-	baseCode := `module base
-
-struct Base:
-    id: Int = 100
-
-    def GetId(self) -> Int:
-        self.id
-`
-	if err := os.WriteFile(filepath.Join(dir, "base.les"), []byte(baseCode), 0644); err != nil {
-		t.Fatalf("failed to write base.les: %v", err)
+	for name, code := range files {
+		if err := os.WriteFile(filepath.Join(dir, name+".les"), []byte(code), 0644); err != nil {
+			t.Fatalf("failed to write %s.les: %v", name, err)
+		}
 	}
 	ev := NewEvaluator()
 	var out strings.Builder
@@ -270,6 +264,19 @@ struct Base:
 		t.Fatalf("eval failed: %v", err)
 	}
 	return strings.TrimSpace(out.String())
+}
+
+func embSemRunWithModule(t *testing.T, mainCode string) string {
+	t.Helper()
+	const baseCode = `module base
+
+struct Base:
+    id: Int = 100
+
+    def GetId(self) -> Int:
+        self.id
+`
+	return embSemRunWithModules(t, map[string]string{"base": baseCode}, mainCode)
 }
 
 // Type tests must not force lazy fields nor run side-effecting expressions.
@@ -389,6 +396,83 @@ print (Wrong(Base: Base()) is Getter[Int]), (Base() is Getter[Int])`, "falsetrue
 	})
 }
 
+// Extra: an interface is not satisfied when the required method is ambiguous
+// across embedded structs or shadowed by a non-callable field.
+func TestEmbeddingCommonInterfaceEdgeCases(t *testing.T) {
+	embSemRun(t, []embSemCase{
+		{"ambiguous promoted method", `interface Named:
+    Name(): String
+struct A:
+    def Name() -> String:
+        "a"
+struct B:
+    def Name() -> String:
+        "b"
+struct Both:
+    A
+    B
+struct Resolved:
+    A
+    B
+    def Name() -> String:
+        "resolved"
+print (Both(A: A(), B: B()) is Named), (Resolved(A: A(), B: B()) is Named)`, "falsetrue"},
+		{"field shadows method", `interface Named:
+    Name(): String
+struct Base:
+    def Name() -> String:
+        "base"
+struct FieldShadow:
+    Base
+    Name: String
+print (FieldShadow(Base: Base(), Name: "s") is Named)`, "false"},
+	})
+}
+
+// Extra: else-branch flow narrowing aligns with runtime nominal `is` matching.
+func TestEmbeddingCommonFlowNarrowingElseBranch(t *testing.T) {
+	embSemRun(t, []embSemCase{
+		{"else branch narrows to Derived", `struct Base:
+    X: Int
+struct Derived:
+    Base
+    Extra: Int
+def f(x: Base | Derived) -> Int:
+    if x is Base:
+        x.X
+    else:
+        x.Extra
+b = Base(X: 1)
+d = Derived(Base: b, Extra: 9)
+print f(b), " ", f(d)`, "1 9"},
+	})
+}
+
+var embSemGenModFiles = map[string]string{
+	"gen": `module gen
+
+struct Box[T]:
+    v: T
+`,
+}
+
+// Extra: module-qualified generic embedding promotes members and matches the
+// embedded value explicitly.
+func TestEmbeddingCommonModuleQualifiedGeneric(t *testing.T) {
+	out := embSemRunWithModules(t, embSemGenModFiles, `
+import gen
+
+struct Child:
+    gen::Box[Int]
+
+c = Child(Box: gen::Box[Int](v: 7))
+print (c.Box is gen::Box[Int]), " ", (c.Box is gen::Box[String]), " ", c.v, " ", c.Box.v
+`)
+	if out != "true false 7 7" {
+		t.Fatalf("unexpected output %q", out)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Distinguishing tests
 //
@@ -466,4 +550,24 @@ struct Loose:
         v
 print (Loose(Base: Base()) is Base)`, "false"},
 	})
+}
+
+// Extra: a module-qualified generic embedded struct does not match the
+// instantiated embedded type at run time.
+func TestEmbeddingDistinguishingModuleQualifiedGeneric(t *testing.T) {
+	out := embSemRunWithModules(t, embSemGenModFiles, `
+import gen
+
+struct Child:
+    gen::Box[Int]
+
+def f(x) -> Int:
+    x is gen::Box[Int] ? x.v : -1
+
+c = Child(Box: gen::Box[Int](v: 7))
+print (c is gen::Box[Int]), " ", f(c)
+`)
+	if out != "false -1" {
+		t.Fatalf("expected \"false -1\", got %q", out)
+	}
 }

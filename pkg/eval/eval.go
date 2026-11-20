@@ -6170,7 +6170,7 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 			return false
 		}
 
-		// Check struct type or embedded struct type
+		// Check struct type
 		if si, ok := val.(*StructInstance); ok {
 			if si.Def.Name == typeAnnot {
 				return true
