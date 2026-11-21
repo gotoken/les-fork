@@ -163,12 +163,20 @@ func (tr *termByteReader) handleResult(res termReadResult) (byte, bool, bool, er
 	return 0, false, false, io.ErrUnexpectedEOF
 }
 
-func (tr *termByteReader) readByte(timeoutMs int64) (byte, bool, bool, error) {
+func (tr *termByteReader) readByte(timeoutMs int64, ctrl *evalControl) (byte, bool, bool, error) {
 	if tr.eof {
 		return 0, false, true, nil
 	}
 	if timeoutMs > math.MaxInt64/int64(time.Millisecond) {
 		return 0, false, false, fmt.Errorf("timeout duration overflow: %d ms", timeoutMs)
+	}
+	abortCh, wakeCh := ctrl.channels()
+	if abortCh != nil {
+		select {
+		case <-abortCh:
+			return 0, false, false, errInterrupted
+		default:
+		}
 	}
 	if !tr.pending {
 		select {
@@ -176,22 +184,40 @@ func (tr *termByteReader) readByte(timeoutMs int64) (byte, bool, bool, error) {
 			tr.pending = true
 		case <-tr.stopCh:
 			return 0, false, true, nil
+		case <-abortCh:
+			return 0, false, false, errInterrupted
+		case <-wakeCh:
+			return 0, false, false, errInterrupted
 		}
 	}
 	if timeoutMs < 0 {
-		res := <-tr.resCh
-		return tr.handleResult(res)
+		select {
+		case res := <-tr.resCh:
+			return tr.handleResult(res)
+		case <-abortCh:
+			return 0, false, false, errInterrupted
+		case <-wakeCh:
+			return 0, false, false, errInterrupted
+		}
 	}
 	if timeoutMs == 0 {
 		select {
 		case res := <-tr.resCh:
 			return tr.handleResult(res)
+		case <-abortCh:
+			return 0, false, false, errInterrupted
+		case <-wakeCh:
+			return 0, false, false, errInterrupted
 		default:
 			// Give a freshly signaled goroutine one scheduler turn for in-memory readers.
 			runtime.Gosched()
 			select {
 			case res := <-tr.resCh:
 				return tr.handleResult(res)
+			case <-abortCh:
+				return 0, false, false, errInterrupted
+			case <-wakeCh:
+				return 0, false, false, errInterrupted
 			default:
 				return 0, true, false, nil
 			}
@@ -204,6 +230,10 @@ func (tr *termByteReader) readByte(timeoutMs int64) (byte, bool, bool, error) {
 		return tr.handleResult(res)
 	case <-timer.C:
 		return 0, true, false, nil
+	case <-abortCh:
+		return 0, false, false, errInterrupted
+	case <-wakeCh:
+		return 0, false, false, errInterrupted
 	}
 }
 
@@ -233,6 +263,24 @@ func (ev *Evaluator) writeStdoutSeq(seq string) error {
 	w := ev.globalEnv.GetRawStdout()
 	_, err := io.WriteString(w, seq)
 	return err
+}
+
+// cleanupTerminal restores any un-restored terminal raw states and cursor visibility
+// in LIFO order. Safe and idempotent across defer unwinding, EvalProgram teardown, and signals.
+func (ev *Evaluator) cleanupTerminal() {
+	ev.termMu.Lock()
+	defer ev.termMu.Unlock()
+
+	backend := ev.getTermBackend()
+	for i := len(ev.activeTermStates) - 1; i >= 0; i-- {
+		_ = backend.restore(ev.activeTermStates[i])
+	}
+	ev.activeTermStates = nil
+
+	if ev.cursorHiddenDepth > 0 {
+		_ = ev.writeStdoutSeq("\x1b[?25h")
+		ev.cursorHiddenDepth = 0
+	}
 }
 
 func (ev *Evaluator) initTermModule() {
@@ -275,33 +323,6 @@ func (ev *Evaluator) initTermModule() {
 		StructType:    stateStructType,
 	}
 
-	bindIdentityAndShow := func(inst *StructInstance, typeName string, inspectFn func() string) {
-		inst.Fields["=="] = &BuiltinFunc{
-			Name: "==",
-			Fn: func(args []Value) (Value, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("== expects 1 argument, got %d", len(args))
-				}
-				other, ok := Force(args[0]).(*StructInstance)
-				return BoolValue(ok && other == inst), nil
-			},
-		}
-		inst.Fields["Inspect"] = &BuiltinFunc{
-			Name:     "Inspect",
-			FuncType: showFuncType,
-			Fn: func(args []Value) (Value, error) {
-				return StringValue(inspectFn()), nil
-			},
-		}
-		inst.Fields["Type"] = &BuiltinFunc{
-			Name:     "Type",
-			FuncType: showFuncType,
-			Fn: func(args []Value) (Value, error) {
-				return StringValue(typeName), nil
-			},
-		}
-	}
-
 	streamKinds := make(map[*StructInstance]termStreamKind, 4)
 	newStreamConst := func(name string, kind termStreamKind) *StructInstance {
 		inst := &StructInstance{
@@ -310,7 +331,7 @@ func (ev *Evaluator) initTermModule() {
 			Embedded: make(map[string]*StructInstance),
 		}
 		label := "term::" + name
-		bindIdentityAndShow(inst, "term.Stream", func() string { return label })
+		bindOpaqueInstanceMethods(inst, "term.Stream", func() string { return label }, showFuncType)
 		streamKinds[inst] = kind
 		return inst
 	}
@@ -332,12 +353,12 @@ func (ev *Evaluator) initTermModule() {
 			Fields:   make(map[string]Value),
 			Embedded: make(map[string]*StructInstance),
 		}
-		bindIdentityAndShow(inst, "term.State", func() string {
+		bindOpaqueInstanceMethods(inst, "term.State", func() string {
 			if rs.restored {
 				return "term::State(restored)"
 			}
 			return "term::State(active)"
-		})
+		}, showFuncType)
 		stateMap[inst] = rs
 		return inst
 	}
@@ -376,11 +397,15 @@ func (ev *Evaluator) initTermModule() {
 		if err != nil {
 			return nil, err
 		}
+		ev.termMu.Lock()
 		ev.activeTermStates = append(ev.activeTermStates, st)
+		ev.termMu.Unlock()
 		return st, nil
 	}
 
 	leaveRaw := func(st *termRawState) error {
+		ev.termMu.Lock()
+		defer ev.termMu.Unlock()
 		err := ev.getTermBackend().restore(st)
 		for i := len(ev.activeTermStates) - 1; i >= 0; i-- {
 			if ev.activeTermStates[i] == st {
@@ -549,10 +574,27 @@ func (ev *Evaluator) initTermModule() {
 				if outFd, ok := ev.streamFd(ev.globalEnv.GetRawStdout(), 1); ok {
 					_ = ev.getTermBackend().enableVT(outFd)
 				}
-				if err := ev.writeStdoutSeq("\x1b[?25l"); err != nil {
-					return nil, err
+				ev.termMu.Lock()
+				if ev.cursorHiddenDepth == 0 {
+					if err := ev.writeStdoutSeq("\x1b[?25l"); err != nil {
+						ev.termMu.Unlock()
+						return nil, err
+					}
 				}
-				return func() error { return ev.writeStdoutSeq("\x1b[?25h") }, nil
+				ev.cursorHiddenDepth++
+				ev.termMu.Unlock()
+				return func() error {
+					ev.termMu.Lock()
+					defer ev.termMu.Unlock()
+					if ev.cursorHiddenDepth <= 0 {
+						return nil
+					}
+					ev.cursorHiddenDepth--
+					if ev.cursorHiddenDepth == 0 {
+						return ev.writeStdoutSeq("\x1b[?25h")
+					}
+					return nil
+				}, nil
 			})
 		},
 	}
@@ -603,8 +645,10 @@ func (ev *Evaluator) initTermModule() {
 				runtime.AddCleanup(ev, func(r *termByteReader) { r.close() }, tr)
 				ev.termReader = tr
 			}
-			b, timedOut, eof, err := ev.termReader.readByte(timeoutMs)
+			ev.ctrl.checkAbort()
+			b, timedOut, eof, err := ev.termReader.readByte(timeoutMs, ev.ctrl)
 			runtime.KeepAlive(ev)
+			ev.ctrl.checkAbort()
 			if err != nil {
 				return ev.newErrorValue(err.Error()), nil
 			}

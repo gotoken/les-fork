@@ -567,4 +567,38 @@ if term::IsTerminal():
         print "Terminal error: ", res.Message(), "\n"
 ```
 
+---
+
+### Signal Handling Module (`signal`)
+
+During program execution, Les hooks `SIGINT`, `SIGTERM`, and `SIGHUP` by default: when an uncaught signal arrives, blocking `term::ReadByte` and `time::Sleep` calls as well as evaluation loops unwind immediately, un-restored terminal raw states and hidden cursors are automatically restored via the `EvalProgram` cleanup failsafe, and the process exits with code `130` (`SIGINT`), `143` (`SIGTERM`), or `129` (`SIGHUP`). Importing `signal` lets scripts opt in to catching signals gracefully instead of exiting immediately.
+
+```python
+import signal
+```
+
+#### Types & Constants
+- **`signal::Signal`**: Opaque non-constructible type identifying an OS signal (implements `Show` and equality `==` / `!=`).
+  - **`signal::Interrupt`**: `SIGINT` (default exit code `130`).
+  - **`signal::Terminate`**: `SIGTERM` (default exit code `143`).
+  - **`signal::Hangup`**: `SIGHUP` (default exit code `129`).
+
+#### Functions
+- **`signal::Catch(...sigs: signal::Signal): ()`**: Enables catching for the given signal constants (or all three standard signals when called with no arguments). Caught signals queue for `signal::Poll()` and immediately wake any active `term::ReadByte` (which returns an `"interrupted"` `Error` value) or `time::Sleep` (which returns early) without aborting execution.
+- **`signal::Reset(...sigs: signal::Signal): ()`**: Restores default clean-exit handling for the specified signals (or all three when called with no arguments).
+- **`signal::Poll(): signal::Signal | Nil`**: Pops and returns the oldest queued caught signal, or returns `nil` if no caught signals are pending.
+
+#### Signal Catching Example
+```python
+import signal
+import term
+
+signal::Catch(signal::Interrupt, signal::Terminate)
+b = term::ReadByte(-1)!
+if b is Error:
+    sig = signal::Poll()
+    if sig is signal::Signal:
+        print "Interrupted by ", sig, "\n"
+```
+
 

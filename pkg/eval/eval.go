@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -24,19 +25,30 @@ func nextCallID() uint64 {
 
 // Evaluator runs Les AST nodes.
 type Evaluator struct {
-	builtinsEnv      *Environment
-	globalEnv        *Environment
-	inferencer       *types.Inferencer
-	fileModuleLoader *FileModuleLoader
-	errorStructDef   *StructDefValue
-	termBackend      termBackend
-	termReader       *termByteReader
-	activeTermStates []*termRawState
+	builtinsEnv            *Environment
+	globalEnv              *Environment
+	inferencer             *types.Inferencer
+	fileModuleLoader       *FileModuleLoader
+	errorStructDef         *StructDefValue
+	termBackend            termBackend
+	termReader             *termByteReader
+	termMu                 sync.Mutex
+	activeTermStates       []*termRawState
+	cursorHiddenDepth      int
+	ctrl                   *evalControl
+	disableOSSignals       bool
+	disableEmergencyOSExit bool
 }
 
 func NewEvaluator() *Evaluator {
+	ctrl := newEvalControl()
 	bEnv := NewEnvironment(nil)
-	ev := &Evaluator{builtinsEnv: bEnv, globalEnv: NewEnvironment(bEnv)}
+	bEnv.ctrl = ctrl
+	ev := &Evaluator{
+		builtinsEnv: bEnv,
+		globalEnv:   NewEnvironment(bEnv),
+		ctrl:        ctrl,
+	}
 	ev.initErrorStructDef()
 	ev.initIOModule()
 	ev.initBufioModule()
@@ -44,6 +56,7 @@ func NewEvaluator() *Evaluator {
 	ev.initRandModule()
 	ev.initOSModule()
 	ev.initTermModule()
+	ev.initSignalModule()
 	ev.registerBuiltins()
 	return ev
 }
@@ -1479,6 +1492,14 @@ func (ev *Evaluator) EvalProgram(prog *ast.Program) (val Value, err error) {
 		_ = inf.InferProgram(prog)
 		ev.SetInferencer(inf)
 	}
+	if ev.ctrl != nil {
+		ev.ctrl.resetForRun()
+	}
+	stopSignals := ev.startSignalWatcher()
+	defer func() {
+		stopSignals()
+		ev.cleanupTerminal()
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			if exitErr, ok := r.(*ExitError); ok {
@@ -1893,6 +1914,7 @@ func (env *Environment) evalTypeInstCallee(e *ast.TypeInstExpr) (Value, bool, er
 }
 
 func (env *Environment) evalStmt(stmt ast.Stmt) (Value, error) {
+	env.ctrl.checkAbort()
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
 		if _, ok := env.store[s.Name]; ok {
@@ -2417,6 +2439,7 @@ func (env *Environment) evalForStmt(s *ast.ForStmt) (Value, error) {
 	var breakVal Value = &TupleValue{Elements: []Value{}}
 
 	for {
+		env.ctrl.checkAbort()
 		if s.Cond != nil {
 			condVal := Force(NewThunk(s.Cond, env))
 			bVal, ok := condVal.(BoolValue)
