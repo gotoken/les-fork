@@ -517,3 +517,54 @@ import os
 - **`os::Getpid(): Int`**: Returns the process ID of the current process.
 - **`os::Getenv(key: String): String | Nil`**: Looks up the environment variable named `key`. Returns its value as a `String` if set (including empty string `""`), or `nil` if the variable is not present.
 
+---
+
+### Terminal Module (`term`)
+
+The built-in `term` module provides low-level terminal control primitives for interactive CLI programs, including TTY detection, terminal dimensions, raw input mode management, cursor visibility scoping, and timeout-capable single-byte reads.
+
+```python
+import term
+```
+
+#### Types & Constants
+- **`term::Stream`**: Opaque non-constructible type identifying standard stream targets (implements `Show` and equality `==` / `!=`).
+  - **`term::Stdin`**: Standard input stream target.
+  - **`term::Stdout`**: Standard output stream target.
+  - **`term::Stderr`**: Standard error stream target.
+  - **`term::Both`**: Combined `Stdin` and `Stdout` stream target (default for `term::IsTerminal()`).
+- **`term::State`**: Opaque non-constructible type holding a saved terminal state returned by `term::MakeRaw()` (implements `Show`).
+
+#### Functions
+- **`term::IsTerminal(target: term::Stream = term::Both): Bool`**: Returns `true` if the specified stream target is connected to an interactive terminal (`term::Both` requires both `Stdin` and `Stdout` to be terminals; redirected or in-memory test streams return `false`).
+- **`term::Size(): (Int, Int) | Error`**: Returns the terminal dimensions `(cols, rows)` (inspects `Stdout` first, falling back to `Stdin`). Returns an `Error` if neither stream is a terminal or size lookup fails.
+- **`term::EnableVT(): () | Error`**: Enables ANSI/Virtual Terminal processing on Windows console output (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`). Succeeds immediately as a no-op on POSIX terminals; returns an `Error` if stdout is not an OS file descriptor or console mode configuration fails.
+- **`term::MakeRaw(): term::State | Error`**: Switches standard input into raw (non-canonical, no-echo) mode—and ensures output VT processing is enabled on Windows—returning the prior `term::State` for later restoration.
+- **`term::Restore(state: term::State): () | Error`**: Restores terminal settings from `state`. Calling `Restore` more than once on the same `state` is idempotent.
+- **`term::WithRaw(&block: () -> T): T | Error`**: Enters raw mode, invokes `&block` (`do:`), forces the block's result (`WHNF`), and guarantees terminal restoration via Go `defer` even on runtime errors, `exit()`, or non-local `return`. Returns an `Error` if raw mode setup fails.
+- **`term::WithHiddenCursor(&block: () -> T): T | Error`**: Flushes buffered output, emits `\x1b[?25l` to hide the cursor, invokes `&block` (`do:`), forces its result, and guarantees cursor restoration (`\x1b[?25h`) and flush on exit (including `exit()` and non-local `return`).
+- **`term::ReadByte(timeoutMs: Int = -1): Int | Nil | Error`**: Reads a single raw byte (`0`–`255`) from standard input without line buffering (draining any bytes previously pre-buffered by `gets()` / `bufio::Reader` first).
+  - Returns an `Int` in `0..255` when a byte is read.
+  - Returns `-1` if `timeoutMs >= 0` and no byte arrives before the timeout expires.
+  - Returns `nil` on EOF.
+  - Returns an `Error` if reading fails.
+
+> [!NOTE]
+> **Laziness & Side-Effect Demand**:
+> Bare statements (such as `term::WithRaw() do: ...` or `term::Restore(st)`) execute immediately. Variable bindings (such as `b = term::ReadByte(50)` or `r = term::Restore(st)`) wrap the call in a lazy `Thunk` until forced with `!`, `is`, `match`, `else`, or `print`.
+
+#### Raw Input & Cursor Scoping Example
+```python
+import term
+
+if term::IsTerminal():
+    res = term::WithRaw() do:
+        term::WithHiddenCursor() do:
+            b = term::ReadByte(50)!
+            if b is Int && b >= 0:
+                print "Byte: ", b, "\n"
+    if res is Error:
+        print "Terminal error: ", res.Message(), "\n"
+```
+
+

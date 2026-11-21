@@ -6,6 +6,7 @@ var builtinModuleFactories = map[string]func(alias string) *ModuleType{
 	"time":  makeTimeModuleType,
 	"rand":  makeRandModuleType,
 	"os":    makeOsModuleType,
+	"term":  makeTermModuleType,
 }
 
 // NewBuiltinModuleType constructs a fresh ModuleType for a known built-in module, or returns nil.
@@ -125,5 +126,84 @@ func makeOsModuleType(alias string) *ModuleType {
 			},
 		},
 		Types: map[string]Type{},
+	}
+}
+
+func makeTermModuleType(alias string) *ModuleType {
+	if alias == "" {
+		alias = "term"
+	}
+	showStrMethod := &FuncType{
+		Arg: &TupleType{Elems: []Type{}},
+		Ret: TypeString,
+	}
+	streamStruct := &StructType{
+		Name: "term.Stream",
+		Methods: map[string]*FuncType{
+			"Inspect": showStrMethod,
+			"Type":    showStrMethod,
+		},
+	}
+	stateStruct := &StructType{
+		Name: "term.State",
+		Methods: map[string]*FuncType{
+			"Inspect": showStrMethod,
+			"Type":    showStrMethod,
+		},
+	}
+	tParam := &TypeParamType{Name: "T"}
+	withBlock := func() *FuncType {
+		return &FuncType{
+			TypeParams: []TypeParamDef{{Name: "T"}},
+			Arg:        &TupleType{Elems: []Type{}},
+			BlockParam: &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: tParam,
+			},
+			Ret: NewUnionType(tParam, BuiltinErrorIface),
+		}
+	}
+	return &ModuleType{
+		Name: alias,
+		Exports: map[string]Type{
+			"Stdin":  streamStruct,
+			"Stdout": streamStruct,
+			"Stderr": streamStruct,
+			"Both":   streamStruct,
+			"IsTerminal": &FuncType{
+				Arg:      &TupleType{Elems: []Type{streamStruct}},
+				MinArity: 0,
+				MaxArity: 1,
+				Ret:      TypeBool,
+			},
+			"Size": &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: NewUnionType(&TupleType{Elems: []Type{TypeInt, TypeInt}}, BuiltinErrorIface),
+			},
+			"EnableVT": &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: NewUnionType(&TupleType{Elems: []Type{}}, BuiltinErrorIface),
+			},
+			"MakeRaw": &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: NewUnionType(stateStruct, BuiltinErrorIface),
+			},
+			"Restore": &FuncType{
+				Arg: &TupleType{Elems: []Type{stateStruct}},
+				Ret: NewUnionType(&TupleType{Elems: []Type{}}, BuiltinErrorIface),
+			},
+			"WithRaw":          withBlock(),
+			"WithHiddenCursor": withBlock(),
+			"ReadByte": &FuncType{
+				Arg:      &TupleType{Elems: []Type{TypeInt}},
+				MinArity: 0,
+				MaxArity: 1,
+				Ret:      NewUnionType(TypeInt, TypeNil, BuiltinErrorIface),
+			},
+		},
+		Types: map[string]Type{
+			"Stream": streamStruct,
+			"State":  stateStruct,
+		},
 	}
 }
