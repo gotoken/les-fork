@@ -311,3 +311,94 @@ print v, " ", err
 		t.Fatalf("expected %q, got %q", "inner outer", out)
 	}
 }
+
+func TestEvalElseExprInStructConstructorsAndParenOmittedCalls(t *testing.T) {
+	code := `
+struct Box:
+    x: Int
+    y: Int
+
+def fail_or(n: Int) -> Int | Error:
+    if n < 0:
+        Error("neg")
+    else:
+        n
+
+def make_box(n: Int) -> Box | Error:
+    Box(x: fail_or(n) else |err|: return err, y: 10)
+
+def update_box(b: Box, n: Int) -> Box | Error:
+    Box(b, x: fail_or(n) else |err|: return err)
+
+def show_then_ret(n: Int) -> Int | Error:
+    print fail_or(n) else |err|:
+        return err
+    return 99
+
+b1 = make_box(-1)
+m1 = match b1:
+    case Box:
+        "ok"
+    case Error:
+        b1.Message()
+
+base = Box(x: 1, y: 2)
+b2 = update_box(base, -5)
+m2 = match b2:
+    case Box:
+        "ok"
+    case Error:
+        b2.Message()
+
+s1 = show_then_ret(-2)
+m3 = match s1:
+    case Int:
+        "ok"
+    case Error:
+        s1.Message()
+
+def greet_err() -> Int:
+    x = fail_or(-3) else |e|: print e.Message(), " "
+    0
+
+greet_err()
+print m1, " ", m2, " ", m3
+`
+	out, err := runLesChecked(code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "neg neg neg neg" {
+		t.Fatalf("expected %q, got %q", "neg neg neg neg", out)
+	}
+}
+
+func TestEvalElseExprExitInInlineHandler(t *testing.T) {
+	code := `
+def fail() -> Int | Error:
+    Error("fatal")
+
+x = fail() else exit 7
+print x
+`
+	l := lexer.NewLexer(code)
+	p := parser.NewParser(l)
+	prog := p.ParseProgram()
+	if len(p.Errors()) > 0 {
+		t.Fatalf("parser errors: %v", p.Errors())
+	}
+	inf := types.NewInferencer()
+	if err := inf.InferProgram(prog); err != nil {
+		t.Fatalf("type error: %v", err)
+	}
+	ev := NewEvaluator()
+	ev.SetInferencer(inf)
+	_, err := ev.EvalProgram(prog)
+	exitErr, ok := err.(*ExitError)
+	if !ok {
+		t.Fatalf("expected *ExitError, got %T (%v)", err, err)
+	}
+	if exitErr.Code != 7 {
+		t.Fatalf("expected exit code 7, got %d", exitErr.Code)
+	}
+}

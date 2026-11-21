@@ -166,6 +166,26 @@ def unwrap_or[T](x: T | Error, fallback: T) -> T:
 	}
 }
 
+func TestInferElseExprGenericStructWithConditionalErrorMethods(t *testing.T) {
+	code := `
+struct ErrBox[T]:
+    msg: T
+    def Message() -> T: @msg
+    def Inspect() -> String: "ErrBox"
+
+def handle[T](x: ErrBox[T]) -> ErrBox[T] | Error:
+    v = x else |err|: return err
+    v
+
+def call_err() -> ErrBox[String] | Error:
+    handle[String](ErrBox[String](msg: "boom"))
+`
+	_, _, err := inferElseTest(t, code)
+	if err != nil {
+		t.Fatalf("unexpected type error: %v", err)
+	}
+}
+
 func TestInferElseExprAlwaysErrorNonFallthrough(t *testing.T) {
 	code := `
 def fail_always() -> Error:

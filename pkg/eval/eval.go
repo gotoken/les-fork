@@ -1701,6 +1701,16 @@ func (env *Environment) newThunk(expr ast.Expr) *Thunk {
 	return thunk
 }
 
+func (env *Environment) evalLazyOrForcedExpr(expr ast.Expr) Value {
+	if env.isForceDemand(expr) {
+		return env.forceExpr(expr)
+	}
+	if lit, ok := evalLiteral(expr); ok {
+		return lit
+	}
+	return env.newThunk(expr)
+}
+
 func isTypeDefRuntimeValue(v Value) bool {
 	if ev, evaluated := PeekEvaluated(v); evaluated {
 		v = ev
@@ -3163,11 +3173,11 @@ func (env *Environment) instantiateStruct(sDef *StructDefValue, args []ast.Expr)
 		for i := argStartIdx; i < len(args); i++ {
 			arg := args[i]
 			if named, ok := arg.(*ast.NamedArgExpr); ok {
-				fields[named.Name] = env.newThunk(named.Value)
+				fields[named.Name] = env.evalLazyOrForcedExpr(named.Value)
 			} else {
 				if posIdx < len(sDef.FieldOrder) {
 					fName := sDef.FieldOrder[posIdx]
-					fields[fName] = env.newThunk(arg)
+					fields[fName] = env.evalLazyOrForcedExpr(arg)
 					posIdx++
 				}
 			}
@@ -3253,12 +3263,12 @@ func (env *Environment) instantiateStruct(sDef *StructDefValue, args []ast.Expr)
 	for i := argStartIdx; i < len(args); i++ {
 		arg := args[i]
 		if named, ok := arg.(*ast.NamedArgExpr); ok {
-			fields[named.Name] = env.newThunk(named.Value)
+			fields[named.Name] = env.evalLazyOrForcedExpr(named.Value)
 		} else {
 			// Positional argument
 			if posIdx < len(sDef.FieldOrder) {
 				fName := sDef.FieldOrder[posIdx]
-				fields[fName] = env.newThunk(arg)
+				fields[fName] = env.evalLazyOrForcedExpr(arg)
 				posIdx++
 			}
 		}

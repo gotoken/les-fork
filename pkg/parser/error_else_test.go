@@ -204,6 +204,48 @@ func TestParseElseExprForms(t *testing.T) {
 			t.Fatalf("expected 4 stmts in for loop, got %d", len(fs.Body))
 		}
 	})
+
+	t.Run("paren-omitted call with block else followed by single-token stmt", func(t *testing.T) {
+		code := `def f():
+    print g() else |err|:
+        return err
+    return
+`
+		prog := parseElseTest(t, code)
+		fn := prog.Body[0].(*ast.FuncDef)
+		if len(fn.Body) != 2 {
+			t.Fatalf("expected 2 stmts in func body, got %d", len(fn.Body))
+		}
+		if _, ok := fn.Body[0].(*ast.ExprStmt); !ok {
+			t.Fatalf("expected ExprStmt first, got %T", fn.Body[0])
+		}
+		if _, ok := fn.Body[1].(*ast.ReturnStmt); !ok {
+			t.Fatalf("expected ReturnStmt second, got %T", fn.Body[1])
+		}
+	})
+
+	t.Run("inline else supports paren-omitted calls", func(t *testing.T) {
+		code := `def f():
+    a = g() else exit 1
+    b = h() else |err|: print err.Message()
+    a + b
+`
+		prog := parseElseTest(t, code)
+		fn := prog.Body[0].(*ast.FuncDef)
+		if len(fn.Body) != 3 {
+			t.Fatalf("expected 3 stmts, got %d", len(fn.Body))
+		}
+		e1 := fn.Body[0].(*ast.VarDecl).Value.(*ast.ElseExpr)
+		c1 := e1.Body[0].(*ast.ExprStmt).Value.(*ast.CallExpr)
+		if !c1.ParenOmitted {
+			t.Fatalf("expected ParenOmitted CallExpr for exit 1")
+		}
+		e2 := fn.Body[1].(*ast.VarDecl).Value.(*ast.ElseExpr)
+		c2 := e2.Body[0].(*ast.ExprStmt).Value.(*ast.CallExpr)
+		if !c2.ParenOmitted {
+			t.Fatalf("expected ParenOmitted CallExpr for print err.Message()")
+		}
+	})
 }
 
 func TestParseElseExprErrors(t *testing.T) {

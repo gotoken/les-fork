@@ -5589,7 +5589,17 @@ func canValueSatisfyError(t Type) bool {
 		}
 		return false
 	case *StructType:
-		return ImplementsInterface(typ, BuiltinErrorIface)
+		if ImplementsInterface(typ, BuiltinErrorIface) {
+			return true
+		}
+		if ContainsSelfOrParam(typ) {
+			if _, errMsg := typ.LookupMember("Message"); errMsg == nil {
+				if _, errInsp := typ.LookupMember("Inspect"); errInsp == nil {
+					return true
+				}
+			}
+		}
+		return false
 	default:
 		return false
 	}

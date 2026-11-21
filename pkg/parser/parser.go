@@ -1510,6 +1510,19 @@ func (p *Parser) parseBreakStmt() *ast.BreakStmt {
 	return &ast.BreakStmt{Position: pos, Value: val}
 }
 
+func stmtEndsWithBlock(stmt ast.Stmt) bool {
+	switch s := stmt.(type) {
+	case *ast.ExprStmt:
+		return exprEndsWithBlock(s.Value)
+	case *ast.ReturnStmt:
+		return exprEndsWithBlock(s.Value)
+	case *ast.BreakStmt:
+		return exprEndsWithBlock(s.Value)
+	default:
+		return false
+	}
+}
+
 func exprEndsWithBlock(expr ast.Expr) bool {
 	if expr == nil {
 		return false
@@ -1518,11 +1531,23 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 	case *ast.MatchExpr:
 		return !e.WrappedInParens
 	case *ast.CallExpr:
-		return e.Block != nil && !e.WrappedInParens
+		if e.WrappedInParens {
+			return false
+		}
+		if e.Block != nil {
+			return true
+		}
+		return e.ParenOmitted && len(e.Args) > 0 && exprEndsWithBlock(e.Args[len(e.Args)-1])
 	case *ast.LambdaExpr:
 		return e.Expr == nil && !e.WrappedInParens
 	case *ast.ElseExpr:
-		return e.IsBlock && !e.WrappedInParens
+		if e.WrappedInParens {
+			return false
+		}
+		if e.IsBlock {
+			return true
+		}
+		return len(e.Body) > 0 && stmtEndsWithBlock(e.Body[len(e.Body)-1])
 	case *ast.NamedArgExpr:
 		return exprEndsWithBlock(e.Value)
 	default:
@@ -1568,10 +1593,11 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				block = p.parseBlockLiteral()
 			}
 			prefix = &ast.CallExpr{
-				Position: prefix.Pos(),
-				Callee:   prefix,
-				Args:     args,
-				Block:    block,
+				Position:     prefix.Pos(),
+				Callee:       prefix,
+				Args:         args,
+				Block:        block,
+				ParenOmitted: true,
 			}
 		}
 	}
@@ -1600,10 +1626,11 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				block = p.parseBlockLiteral()
 			}
 			prefix = &ast.CallExpr{
-				Position: prefix.Pos(),
-				Callee:   prefix,
-				Args:     args,
-				Block:    block,
+				Position:     prefix.Pos(),
+				Callee:       prefix,
+				Args:         args,
+				Block:        block,
+				ParenOmitted: true,
 			}
 		}
 	}
@@ -2568,7 +2595,10 @@ func (p *Parser) parseElseInlineStmt() ast.Stmt {
 		}
 		return &ast.ContinueStmt{Position: pos}
 	default:
+		prevStmtStart := p.atStatementStart
+		p.atStatementStart = true
 		val := p.parseExpr(PREC_ELSE - 1)
+		p.atStatementStart = prevStmtStart
 		if val == nil {
 			return nil
 		}

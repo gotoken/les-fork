@@ -335,6 +335,7 @@ type CallExpr struct {
 	Callee          Expr
 	Args            []Expr
 	Block           *BlockLiteral // optional trailing do |x|: block
+	ParenOmitted    bool          // true when parsed as a paren-omitted statement call
 	WrappedInParens bool          // true when enclosed in (...) so outer stmts treat ')' as end
 }
 
