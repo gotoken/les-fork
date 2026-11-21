@@ -1372,6 +1372,7 @@ type Environment struct {
 	typeArgs           map[string]string                       // type parameters introduced by this scope -> runtime type arguments
 	isFieldScope       bool                                    // holds the fields of a struct instance for its methods (see calleeBeyondFields)
 	fieldScopes        map[string]*Environment                 // for captured field snapshots: maps field name to its originating field scope
+	ctrl               *evalControl                            // shared execution control for interrupt/signal cancellation
 }
 
 func NewEnvironment(parent *Environment) *Environment {
@@ -1388,6 +1389,7 @@ func NewEnvironment(parent *Environment) *Environment {
 		env.ActiveClosureID = parent.ActiveClosureID
 		env.ActiveLoopID = parent.ActiveLoopID
 		env.Filename = parent.Filename
+		env.ctrl = parent.ctrl
 	}
 	return env
 }

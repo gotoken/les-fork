@@ -46,7 +46,16 @@ func (ev *Evaluator) initTimeModule() {
 				return nil, err
 			}
 			if d > 0 {
-				time.Sleep(d)
+				ev.ctrl.checkAbort()
+				timer := time.NewTimer(d)
+				defer timer.Stop()
+				abortCh, wakeCh := ev.ctrl.channels()
+				select {
+				case <-timer.C:
+				case <-abortCh:
+					ev.ctrl.checkAbort()
+				case <-wakeCh:
+				}
 			}
 			return &TupleValue{Elements: []Value{}}, nil
 		},

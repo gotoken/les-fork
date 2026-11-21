@@ -1,12 +1,13 @@
 package types
 
 var builtinModuleFactories = map[string]func(alias string) *ModuleType{
-	"io":    makeIOModuleType,
-	"bufio": makeBufioModuleType,
-	"time":  makeTimeModuleType,
-	"rand":  makeRandModuleType,
-	"os":    makeOsModuleType,
-	"term":  makeTermModuleType,
+	"io":     makeIOModuleType,
+	"bufio":  makeBufioModuleType,
+	"time":   makeTimeModuleType,
+	"rand":   makeRandModuleType,
+	"os":     makeOsModuleType,
+	"term":   makeTermModuleType,
+	"signal": makeSignalModuleType,
 }
 
 // NewBuiltinModuleType constructs a fresh ModuleType for a known built-in module, or returns nil.
@@ -204,6 +205,46 @@ func makeTermModuleType(alias string) *ModuleType {
 		Types: map[string]Type{
 			"Stream": streamStruct,
 			"State":  stateStruct,
+		},
+	}
+}
+
+func makeSignalModuleType(alias string) *ModuleType {
+	if alias == "" {
+		alias = "signal"
+	}
+	showStrMethod := &FuncType{
+		Arg: &TupleType{Elems: []Type{}},
+		Ret: TypeString,
+	}
+	signalStruct := &StructType{
+		Name: "signal.Signal",
+		Methods: map[string]*FuncType{
+			"Inspect": showStrMethod,
+			"Type":    showStrMethod,
+		},
+	}
+	variadicSigs := &FuncType{
+		Arg:      &TupleType{Elems: []Type{signalStruct}, IsVariadic: true},
+		MinArity: 0,
+		MaxArity: -1,
+		Ret:      &TupleType{Elems: []Type{}},
+	}
+	return &ModuleType{
+		Name: alias,
+		Exports: map[string]Type{
+			"Interrupt": signalStruct,
+			"Terminate": signalStruct,
+			"Hangup":    signalStruct,
+			"Catch":     variadicSigs,
+			"Reset":     variadicSigs,
+			"Poll": &FuncType{
+				Arg: &TupleType{Elems: []Type{}},
+				Ret: NewUnionType(signalStruct, TypeNil),
+			},
+		},
+		Types: map[string]Type{
+			"Signal": signalStruct,
 		},
 	}
 }

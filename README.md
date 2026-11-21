@@ -84,7 +84,7 @@ Comprehensive documentation is organized into dedicated guides in the [`doc/`](d
 - [**Language Syntax & Semantics Guide**](doc/syntax.md):
   Covers primitive types, bidirectional local and gradual type inference, union types, generic type constraints, modules, function call semantics, operator precedence, lambdas, control flow, structs, embedding, interfaces, and error handling.
 - [**Standard Library & Built-in Reference**](doc/reference.md):
-  Complete reference manual for built-in functions (`print`, `exit`, `gets`), predefined variables (`Args`, `Stdin`, `Stdout`, `Stderr`), primitive type methods, core interfaces (`Show`, `Equatable`, `Comparable`, `Indexable`, `Numeric`), and standard library modules (`io`, `bufio`, `time`, `rand`, `os`, `term`).
+  Complete reference manual for built-in functions (`print`, `exit`, `gets`), predefined variables (`Args`, `Stdin`, `Stdout`, `Stderr`), primitive type methods, core interfaces (`Show`, `Equatable`, `Comparable`, `Indexable`, `Numeric`), and standard library modules (`io`, `bufio`, `time`, `rand`, `os`, `term`, `signal`).
 
 ---
 
