@@ -205,7 +205,7 @@ func (ev *Evaluator) handleIncomingSignal(sig os.Signal) {
 		return
 	}
 	if emergency, code := ev.ctrl.deliverSignal(kind); emergency {
-		ev.cleanupTerminal()
+		ev.cleanupTerminal(false)
 		if !ev.disableEmergencyOSExit {
 			os.Exit(code)
 		}

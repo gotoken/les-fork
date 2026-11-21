@@ -586,7 +586,7 @@ import signal
 #### Functions
 - **`signal::Catch(...sigs: signal::Signal): ()`**: Enables catching for the given signal constants (or all three standard signals when called with no arguments). Caught signals queue for `signal::Poll()` and immediately wake any active `term::ReadByte` (which returns an `"interrupted"` `Error` value) or `time::Sleep` (which returns early) without aborting execution.
 - **`signal::Reset(...sigs: signal::Signal): ()`**: Restores default clean-exit handling for the specified signals (or all three when called with no arguments).
-- **`signal::Poll(): signal::Signal | Nil`**: Pops and returns the oldest queued caught signal, or returns `nil` if no caught signals are pending.
+- **`signal::Poll(): signal::Signal | Nil`**: Pops and returns the oldest queued caught signal, or returns `nil` if no caught signals are pending. Use `signal::Poll()!` to sample immediately when binding to a variable without an immediate consumer.
 
 #### Signal Catching Example
 ```python

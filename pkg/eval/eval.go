@@ -1498,7 +1498,7 @@ func (ev *Evaluator) EvalProgram(prog *ast.Program) (val Value, err error) {
 	stopSignals := ev.startSignalWatcher()
 	defer func() {
 		stopSignals()
-		ev.cleanupTerminal()
+		ev.cleanupTerminal(true)
 	}()
 	defer func() {
 		if r := recover(); r != nil {

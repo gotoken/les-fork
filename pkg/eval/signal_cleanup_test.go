@@ -229,6 +229,31 @@ for:
 		}
 	})
 
+	t.Run("caught signal then Reset restores default ExitError abort", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		defer pr.Close()
+		defer pw.Close()
+
+		code := `
+import signal
+import term
+signal::Catch(signal::Interrupt)
+signal::Reset(signal::Interrupt)
+_ = term::ReadByte(-1)!
+print "unreachable"
+`
+		_, _, err := evalSignalScript(t, code, nil, pr, func(ev *Evaluator) {
+			go func() {
+				time.Sleep(35 * time.Millisecond)
+				ev.handleIncomingSignal(syscall.SIGINT)
+			}()
+		})
+		var exitErr *ExitError
+		if !errors.As(err, &exitErr) || exitErr.Code != 130 {
+			t.Fatalf("expected ExitError{130} after Reset, got %v", err)
+		}
+	})
+
 	t.Run("second uncaught signal triggers emergency cleanupTerminal", func(t *testing.T) {
 		mock := &mockTermBackend{ttyFDs: map[int]bool{0: true, 1: true}}
 		ev := NewEvaluator()

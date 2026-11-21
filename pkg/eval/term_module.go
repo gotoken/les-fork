@@ -266,8 +266,9 @@ func (ev *Evaluator) writeStdoutSeq(seq string) error {
 }
 
 // cleanupTerminal restores any un-restored terminal raw states and cursor visibility
-// in LIFO order. Safe and idempotent across defer unwinding, EvalProgram teardown, and signals.
-func (ev *Evaluator) cleanupTerminal() {
+// in LIFO order. When flushBuffered is false (async signal emergency path), it avoids
+// touching non-thread-safe bufio.Writer and writes cursor restoration directly if stdout is an *os.File.
+func (ev *Evaluator) cleanupTerminal(flushBuffered bool) {
 	ev.termMu.Lock()
 	defer ev.termMu.Unlock()
 
@@ -278,7 +279,16 @@ func (ev *Evaluator) cleanupTerminal() {
 	ev.activeTermStates = nil
 
 	if ev.cursorHiddenDepth > 0 {
-		_ = ev.writeStdoutSeq("\x1b[?25h")
+		if flushBuffered {
+			_ = ev.writeStdoutSeq("\x1b[?25h")
+		} else {
+			w := ev.globalEnv.GetRawStdout()
+			if f, ok := w.(*os.File); ok {
+				_, _ = f.WriteString("\x1b[?25h")
+			} else if ev.disableEmergencyOSExit {
+				_, _ = io.WriteString(w, "\x1b[?25h")
+			}
+		}
 		ev.cursorHiddenDepth = 0
 	}
 }
@@ -620,6 +630,8 @@ func (ev *Evaluator) initTermModule() {
 				timeoutMs = ms
 			}
 
+			ev.ctrl.checkAbort()
+
 			// Drain any bytes already pre-buffered by gets()/bufio::Reader without creating a new bufio.Reader.
 			var existingBR *bufio.Reader
 			for cur := ev.globalEnv; cur != nil; cur = cur.parent {
@@ -645,7 +657,6 @@ func (ev *Evaluator) initTermModule() {
 				runtime.AddCleanup(ev, func(r *termByteReader) { r.close() }, tr)
 				ev.termReader = tr
 			}
-			ev.ctrl.checkAbort()
 			b, timedOut, eof, err := ev.termReader.readByte(timeoutMs, ev.ctrl)
 			runtime.KeepAlive(ev)
 			ev.ctrl.checkAbort()
