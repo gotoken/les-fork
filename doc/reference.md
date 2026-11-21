@@ -31,6 +31,9 @@ This document provides a comprehensive reference for the built-in functions, pre
 5. [Built-in Modules](#5-built-in-modules)
    - [Standard I/O Module (`io`)](#standard-io-module-io)
    - [Buffered I/O Module (`bufio`)](#buffered-io-module-bufio)
+   - [Time Module (`time`)](#time-module-time)
+   - [Random Number Module (`rand`)](#random-number-module-rand)
+   - [OS Module (`os`)](#os-module-os)
 
 ---
 
@@ -428,3 +431,89 @@ import bufio
 - **`bufio::Writer(w: Writer): Writer`**: Constructs a buffered writer wrapping an underlying `Writer` (such as `io::Stdout` or a custom struct implementing `Write`). Automatically tracked and flushed on program exit or `exit()`. If `w` is already a `bufio::Writer`, returns it directly.
   - `Write(b: Bytes): Int`: Appends byte sequence `b` to write buffer.
   - `Flush(): ()`: Flushes buffered data to the underlying stream.
+
+---
+
+### Time Module (`time`)
+
+The built-in `time` module provides wall-clock timestamps, monotonic elapsed counters, and execution sleep.
+
+```python
+import time
+```
+
+#### Functions
+- **`time::Unix(): Int`**: Returns the current Unix timestamp in seconds (wall clock).
+- **`time::UnixMilli(): Int`**: Returns the current Unix timestamp in milliseconds (wall clock).
+- **`time::UnixNano(): Int`**: Returns the current Unix timestamp in nanoseconds (wall clock).
+- **`time::MonotonicMilli(): Int`**: Returns monotonic elapsed milliseconds since evaluator initialization (safe for elapsed-time measurement regardless of wall-clock adjustments).
+- **`time::MonotonicNano(): Int`**: Returns monotonic elapsed nanoseconds since evaluator initialization.
+- **`time::Sleep(seconds: Int | Float): ()`**: Pauses execution for the given duration in seconds (pass a `Float` such as `0.05` for sub-second durations).
+  - Non-positive values (`<= 0`, including `-Inf`) return immediately.
+  - `NaN`, `+Inf`, or durations overflowing `int64` nanoseconds raise a runtime error.
+
+> [!NOTE]
+> **Laziness & Timestamp Demand Points**:
+> In Les, initial variable bindings (`t0 = time::MonotonicNano()`) wrap the right-hand side in a lazy `Thunk` until demanded. When capturing timestamps around code such as `time::Sleep(...)`, use `!` (`force`) to sample immediately:
+> ```python
+> t0 = time::MonotonicNano()!
+> time::Sleep(0.025)
+> t1 = time::MonotonicNano()!
+> print "Elapsed (ns): ", t1 - t0, "\n"
+> ```
+
+---
+
+### Random Number Module (`rand`)
+
+The built-in `rand` module provides both a pure immutable PRNG `Source` interface and a convenient stateful `Rand` wrapper.
+
+```python
+import rand
+```
+
+#### Core Interface
+- **`rand::Source`**:
+  ```python
+  interface Source:
+      def Next(): (Int, Self)
+  ```
+  Produces the next unsigned 64-bit integer (`0 <= v < 2^64`) paired with the next `Source` state. User-defined immutable `struct`s implementing `Next()` satisfy `rand::Source` structurally without mutation.
+
+#### Constructors & Functions
+- **`rand::Seed(seed?: Int | String): Source`**: Creates an immutable built-in `Source`.
+  - With no arguments, seeds automatically from OS cryptographic entropy (`crypto/rand`).
+  - With an `Int` or `String` seed, hashes deterministically for reproducible sequences.
+- **`rand::Rand(src?: Source): Rand`**: Constructs a stateful random generator cursor wrapping any `rand::Source` (or a freshly entropy-seeded `Source` when omitted).
+  - `Number(n: Int): Int`: Returns a uniformly distributed unbiased integer in `[0, n)` (supports arbitrary-precision `Int`; `n <= 0` raises a runtime error).
+  - `Fraction(): Float`: Returns a uniformly distributed floating-point value in `[0.0, 1.0)`.
+  - `Uint64(): Int`: Returns the next raw unsigned 64-bit integer in `[0, 2^64)` from the underlying `Source`.
+- **`rand::Number(n: Int): Int`**: Top-level shortcut using a shared evaluator-scoped auto-seeded `Rand`.
+- **`rand::Fraction(): Float`**: Top-level shortcut using a shared evaluator-scoped auto-seeded `Rand`.
+
+#### Custom `Source` Example
+```python
+struct SimpleLCG:
+    state: Int
+    def Next() -> (Int, SimpleLCG):
+        n = (@state * 6364136223846793005 + 1442695040888963407) & 0xFFFF_FFFF_FFFF_FFFF
+        (n, SimpleLCG(n))
+
+rng = rand::Rand(SimpleLCG(42))
+print rng.Number(6), " ", rng.Fraction(), "\n"
+```
+
+---
+
+### OS Module (`os`)
+
+The built-in `os` module provides minimal process and environment inspection primitives.
+
+```python
+import os
+```
+
+#### Functions
+- **`os::Getpid(): Int`**: Returns the process ID of the current process.
+- **`os::Getenv(key: String): String | Nil`**: Looks up the environment variable named `key`. Returns its value as a `String` if set (including empty string `""`), or `nil` if the variable is not present.
+
