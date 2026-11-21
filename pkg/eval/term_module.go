@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"time"
@@ -51,8 +52,10 @@ func (defaultTermBackend) getSize(fd int) (int, int, error) {
 }
 
 type termReadResult struct {
-	b   byte
-	err error
+	b        byte
+	hasByte  bool
+	eofAfter bool
+	err      error
 }
 
 // termByteReader serializes single-byte reads across one background goroutine
@@ -76,19 +79,29 @@ func newTermByteReader(r io.Reader) *termByteReader {
 }
 
 func (tr *termByteReader) loop() {
+	const maxEmptyReads = 100
 	var buf [1]byte
 	for range tr.reqCh {
+		emptyReads := 0
 		for {
 			n, err := tr.reader.Read(buf[:])
 			if n > 0 {
-				tr.resCh <- termReadResult{b: buf[0]}
+				tr.resCh <- termReadResult{
+					b:        buf[0],
+					hasByte:  true,
+					eofAfter: err == io.EOF,
+				}
 				break
 			}
 			if err != nil {
 				tr.resCh <- termReadResult{err: err}
 				break
 			}
-			// Zero-byte non-error Read: yield and retry once.
+			emptyReads++
+			if emptyReads >= maxEmptyReads {
+				tr.resCh <- termReadResult{err: io.ErrNoProgress}
+				break
+			}
 			runtime.Gosched()
 		}
 	}
@@ -96,6 +109,12 @@ func (tr *termByteReader) loop() {
 
 func (tr *termByteReader) handleResult(res termReadResult) (byte, bool, bool, error) {
 	tr.pending = false
+	if res.hasByte {
+		if res.eofAfter {
+			tr.eof = true
+		}
+		return res.b, false, false, nil
+	}
 	if res.err == io.EOF {
 		tr.eof = true
 		return 0, false, true, nil
@@ -103,12 +122,15 @@ func (tr *termByteReader) handleResult(res termReadResult) (byte, bool, bool, er
 	if res.err != nil {
 		return 0, false, false, res.err
 	}
-	return res.b, false, false, nil
+	return 0, false, false, io.ErrUnexpectedEOF
 }
 
 func (tr *termByteReader) readByte(timeoutMs int64) (byte, bool, bool, error) {
 	if tr.eof {
 		return 0, false, true, nil
+	}
+	if timeoutMs > math.MaxInt64/int64(time.Millisecond) {
+		return 0, false, false, fmt.Errorf("timeout duration overflow: %d ms", timeoutMs)
 	}
 	if !tr.pending {
 		tr.reqCh <- struct{}{}
@@ -319,14 +341,17 @@ func (ev *Evaluator) initTermModule() {
 		if err != nil {
 			return nil, err
 		}
-		ev.activeTermState = st
+		ev.activeTermStates = append(ev.activeTermStates, st)
 		return st, nil
 	}
 
 	leaveRaw := func(st *termRawState) error {
 		err := ev.getTermBackend().restore(st)
-		if ev.activeTermState == st {
-			ev.activeTermState = nil
+		for i := len(ev.activeTermStates) - 1; i >= 0; i-- {
+			if ev.activeTermStates[i] == st {
+				ev.activeTermStates = append(ev.activeTermStates[:i], ev.activeTermStates[i+1:]...)
+				break
+			}
 		}
 		return err
 	}

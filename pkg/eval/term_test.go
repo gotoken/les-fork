@@ -149,8 +149,8 @@ if st is term::State:
 	if mock.makeRawCount != 1 || mock.restoreCount != 1 {
 		t.Fatalf("expected 1 makeRaw and 1 restore (idempotent second restore), got makeRaw=%d restore=%d", mock.makeRawCount, mock.restoreCount)
 	}
-	if ev.activeTermState != nil {
-		t.Fatalf("expected activeTermState cleared after Restore")
+	if len(ev.activeTermStates) != 0 {
+		t.Fatalf("expected activeTermStates cleared after Restore, got %d", len(ev.activeTermStates))
 	}
 }
 
@@ -177,8 +177,33 @@ print res
 		if len(mock.events) != 2 || mock.events[0] != "makeRaw" || mock.events[1] != "restore" {
 			t.Fatalf("unexpected events: %v", mock.events)
 		}
-		if ev.activeTermState != nil {
-			t.Fatalf("expected activeTermState nil")
+		if len(ev.activeTermStates) != 0 {
+			t.Fatalf("expected activeTermStates empty, got %d", len(ev.activeTermStates))
+		}
+	})
+
+	t.Run("nested WithRaw preserves outer active state until outer exits", func(t *testing.T) {
+		mock := &mockTermBackend{ttyFDs: map[int]bool{0: true, 1: true}}
+		code := `
+import term
+term::WithRaw() do:
+    print "outer|"
+    term::WithRaw() do:
+        print "inner|"
+    st = term::MakeRaw()
+    if st is term::State:
+        term::Restore(st)
+    print "done"
+`
+		out, ev, err := evalTermScript(t, code, mock, strings.NewReader(""))
+		if err != nil {
+			t.Fatalf("eval error: %v", err)
+		}
+		if out != "outer|inner|done" {
+			t.Fatalf("got %q", out)
+		}
+		if mock.makeRawCount != 3 || mock.restoreCount != 3 || len(ev.activeTermStates) != 0 {
+			t.Fatalf("unexpected counts makeRaw=%d restore=%d active=%d", mock.makeRawCount, mock.restoreCount, len(ev.activeTermStates))
 		}
 	})
 
@@ -219,8 +244,8 @@ print play()
 		if out != "77" {
 			t.Fatalf("got %q, want %q", out, "77")
 		}
-		if mock.makeRawCount != 1 || mock.restoreCount != 1 || ev.activeTermState != nil {
-			t.Fatalf("expected clean restore on return; makeRaw=%d restore=%d active=%v", mock.makeRawCount, mock.restoreCount, ev.activeTermState)
+		if mock.makeRawCount != 1 || mock.restoreCount != 1 || len(ev.activeTermStates) != 0 {
+			t.Fatalf("expected clean restore on return; makeRaw=%d restore=%d active=%d", mock.makeRawCount, mock.restoreCount, len(ev.activeTermStates))
 		}
 	})
 
@@ -240,8 +265,8 @@ term::WithRaw() do:
 		if out != "before-exit|" {
 			t.Fatalf("got %q, want %q", out, "before-exit|")
 		}
-		if mock.makeRawCount != 1 || mock.restoreCount != 1 || ev.activeTermState != nil {
-			t.Fatalf("expected clean restore on exit; makeRaw=%d restore=%d active=%v", mock.makeRawCount, mock.restoreCount, ev.activeTermState)
+		if mock.makeRawCount != 1 || mock.restoreCount != 1 || len(ev.activeTermStates) != 0 {
+			t.Fatalf("expected clean restore on exit; makeRaw=%d restore=%d active=%d", mock.makeRawCount, mock.restoreCount, len(ev.activeTermStates))
 		}
 	})
 }
@@ -309,6 +334,26 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, errors.New("device disconnected")
+}
+
+type bytePlusEOFReader struct {
+	b    byte
+	done bool
+}
+
+func (r *bytePlusEOFReader) Read(p []byte) (int, error) {
+	if r.done || len(p) == 0 {
+		return 0, io.EOF
+	}
+	r.done = true
+	p[0] = r.b
+	return 1, io.EOF
+}
+
+type emptySpinReader struct{}
+
+func (emptySpinReader) Read([]byte) (int, error) {
+	return 0, nil
 }
 
 func TestTermReadByteBytesTimeoutEOFAndGetsCoexistence(t *testing.T) {
@@ -394,6 +439,68 @@ print line, "|", b1, "|", b2, "|", eof == nil
 			t.Fatalf("eval error: %v", err)
 		}
 		want := "hello|97|98|true"
+		if out != want {
+			t.Fatalf("got %q, want %q", out, want)
+		}
+	})
+
+	t.Run("simultaneous byte and io.EOF returns byte then nil", func(t *testing.T) {
+		code := `
+import term
+b = term::ReadByte()!
+e = term::ReadByte()!
+print b, "|", e == nil
+`
+		out, _, err := evalTermScript(t, code, nil, &bytePlusEOFReader{b: 'Z'})
+		if err != nil {
+			t.Fatalf("eval error: %v", err)
+		}
+		if out != "90|true" {
+			t.Fatalf("got %q, want %q", out, "90|true")
+		}
+	})
+
+	t.Run("empty reads return ErrNoProgress Error and overflow timeout returns Error", func(t *testing.T) {
+		codeEmpty := `
+import term
+r = term::ReadByte()!
+print r is Error
+`
+		out1, _, err := evalTermScript(t, codeEmpty, nil, emptySpinReader{})
+		if err != nil || out1 != "true" {
+			t.Fatalf("got (%q, %v), want (\"true\", nil)", out1, err)
+		}
+
+		codeOverflow := `
+import term
+r = term::ReadByte(9999999999999999)!
+print r is Error
+`
+		out2, _, err := evalTermScript(t, codeOverflow, nil, strings.NewReader("a"))
+		if err != nil || out2 != "true" {
+			t.Fatalf("got (%q, %v), want (\"true\", nil)", out2, err)
+		}
+	})
+
+	t.Run("doc reference example type checks and runs", func(t *testing.T) {
+		mock := &mockTermBackend{ttyFDs: map[int]bool{0: true, 1: true}}
+		code := `
+import term
+
+if term::IsTerminal():
+    res = term::WithRaw() do:
+        term::WithHiddenCursor() do:
+            b = term::ReadByte(50)!
+            if b is Int && b >= 0:
+                print "Byte: ", b, "\n"
+    if res is Error:
+        print "Terminal error: ", res.Message(), "\n"
+`
+		out, _, err := evalTermScript(t, code, mock, bytes.NewReader([]byte{'A'}))
+		if err != nil {
+			t.Fatalf("eval error: %v", err)
+		}
+		want := "\x1b[?25lByte: 65\n\x1b[?25h"
 		if out != want {
 			t.Fatalf("got %q, want %q", out, want)
 		}

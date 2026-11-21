@@ -86,6 +86,11 @@ func TestPhase2TermModuleTypeCheckErrors(t *testing.T) {
 			errSub: "requires a block argument",
 		},
 		{
+			name:   "WithRaw rejects block with parameter",
+			code:   "import term\nterm::WithRaw() do |x: Int|:\n    x\n",
+			errSub: "type mismatch for block argument",
+		},
+		{
 			name:   "WithHiddenCursor requires block argument",
 			code:   "import term\nterm::WithHiddenCursor()\n",
 			errSub: "requires a block argument",

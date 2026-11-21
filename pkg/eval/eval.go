@@ -31,7 +31,7 @@ type Evaluator struct {
 	errorStructDef   *StructDefValue
 	termBackend      termBackend
 	termReader       *termByteReader
-	activeTermState  *termRawState
+	activeTermStates []*termRawState
 }
 
 func NewEvaluator() *Evaluator {
