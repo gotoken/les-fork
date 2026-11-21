@@ -132,22 +132,26 @@ if sz is (Int, Int):
     (w, h) = sz
     print w, "x", h, "|"
 st = term::MakeRaw()
+st2 = term::MakeRaw()
 if st is term::State:
-    print st.Type(), "|", st, "|"
-    r1 = term::Restore(st)!
-    r2 = term::Restore(st)!
-    print st, "|", r1 is Error, "|", r2 is Error
+    if st2 is term::State:
+        print st == st, "|", st != st2, "|"
+        term::Restore(st2)
+        print st.Type(), "|", st, "|"
+        r1 = term::Restore(st)!
+        r2 = term::Restore(st)!
+        print st, "|", r1 is Error, "|", r2 is Error
 `
 	out, ev, err := evalTermScript(t, code, mock, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("eval error: %v", err)
 	}
-	want := "false|true|false|true|false|120x40|term.State|term::State(active)|term::State(restored)|false|false"
+	want := "false|true|false|true|false|120x40|true|true|term.State|term::State(active)|term::State(restored)|false|false"
 	if out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
-	if mock.makeRawCount != 1 || mock.restoreCount != 1 {
-		t.Fatalf("expected 1 makeRaw and 1 restore (idempotent second restore), got makeRaw=%d restore=%d", mock.makeRawCount, mock.restoreCount)
+	if mock.makeRawCount != 2 || mock.restoreCount != 2 {
+		t.Fatalf("expected 2 makeRaw and 2 restore (idempotent third restore), got makeRaw=%d restore=%d", mock.makeRawCount, mock.restoreCount)
 	}
 	if len(ev.activeTermStates) != 0 {
 		t.Fatalf("expected activeTermStates cleared after Restore, got %d", len(ev.activeTermStates))

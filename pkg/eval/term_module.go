@@ -275,14 +275,7 @@ func (ev *Evaluator) initTermModule() {
 		StructType:    stateStructType,
 	}
 
-	streamKinds := make(map[*StructInstance]termStreamKind, 4)
-	newStreamConst := func(name string, kind termStreamKind) *StructInstance {
-		var inst *StructInstance
-		inst = &StructInstance{
-			Def:      streamDef,
-			Fields:   make(map[string]Value),
-			Embedded: make(map[string]*StructInstance),
-		}
+	bindIdentityAndShow := func(inst *StructInstance, typeName string, inspectFn func() string) {
 		inst.Fields["=="] = &BuiltinFunc{
 			Name: "==",
 			Fn: func(args []Value) (Value, error) {
@@ -297,16 +290,27 @@ func (ev *Evaluator) initTermModule() {
 			Name:     "Inspect",
 			FuncType: showFuncType,
 			Fn: func(args []Value) (Value, error) {
-				return StringValue("term::" + name), nil
+				return StringValue(inspectFn()), nil
 			},
 		}
 		inst.Fields["Type"] = &BuiltinFunc{
 			Name:     "Type",
 			FuncType: showFuncType,
 			Fn: func(args []Value) (Value, error) {
-				return StringValue("term.Stream"), nil
+				return StringValue(typeName), nil
 			},
 		}
+	}
+
+	streamKinds := make(map[*StructInstance]termStreamKind, 4)
+	newStreamConst := func(name string, kind termStreamKind) *StructInstance {
+		inst := &StructInstance{
+			Def:      streamDef,
+			Fields:   make(map[string]Value),
+			Embedded: make(map[string]*StructInstance),
+		}
+		label := "term::" + name
+		bindIdentityAndShow(inst, "term.Stream", func() string { return label })
 		streamKinds[inst] = kind
 		return inst
 	}
@@ -328,23 +332,12 @@ func (ev *Evaluator) initTermModule() {
 			Fields:   make(map[string]Value),
 			Embedded: make(map[string]*StructInstance),
 		}
-		inst.Fields["Inspect"] = &BuiltinFunc{
-			Name:     "Inspect",
-			FuncType: showFuncType,
-			Fn: func(args []Value) (Value, error) {
-				if rs.restored {
-					return StringValue("term::State(restored)"), nil
-				}
-				return StringValue("term::State(active)"), nil
-			},
-		}
-		inst.Fields["Type"] = &BuiltinFunc{
-			Name:     "Type",
-			FuncType: showFuncType,
-			Fn: func(args []Value) (Value, error) {
-				return StringValue("term.State"), nil
-			},
-		}
+		bindIdentityAndShow(inst, "term.State", func() string {
+			if rs.restored {
+				return "term::State(restored)"
+			}
+			return "term::State(active)"
+		})
 		stateMap[inst] = rs
 		return inst
 	}
