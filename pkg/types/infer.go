@@ -830,8 +830,9 @@ func NewInferencer() *Inferencer {
 		TypeAppExprs:   make(map[*ast.IndexExpr]bool),
 		warnUnknown:  true,
 	}
-	inf.modules["io"] = makeIOModuleType("io")
-	inf.modules["bufio"] = makeBufioModuleType("bufio")
+	for name, factory := range builtinModuleFactories {
+		inf.modules[name] = factory(name)
+	}
 	return inf
 }
 
@@ -1016,10 +1017,7 @@ func makeBufioModuleType(alias string) *ModuleType {
 	}
 }
 
-var defaultBuiltinModules = map[string]*ModuleType{
-	"io":    makeIOModuleType("io"),
-	"bufio": makeBufioModuleType("bufio"),
-}
+var defaultBuiltinModules = initDefaultBuiltinModules()
 
 func (inf *Inferencer) SetModuleLoader(loader func(path string) (*ModuleType, error)) {
 	inf.moduleLoader = loader
@@ -2766,22 +2764,14 @@ func (inf *Inferencer) inferOtherStmt(stmt ast.Stmt) error {
 		return nil
 
 	case *ast.ImportStmt:
-		if s.Path == "io" {
+		if factory, ok := builtinModuleFactories[s.Path]; ok {
 			alias := s.Alias
 			if alias == "" {
-				alias = "io"
+				alias = s.Path
 			}
-			mod := makeIOModuleType(alias)
+			mod := factory(alias)
 			inf.modules[alias] = mod
-			inf.modules["io"] = mod
-		} else if s.Path == "bufio" {
-			alias := s.Alias
-			if alias == "" {
-				alias = "bufio"
-			}
-			mod := makeBufioModuleType(alias)
-			inf.modules[alias] = mod
-			inf.modules["bufio"] = mod
+			inf.modules[s.Path] = mod
 		} else if inf.moduleLoader != nil {
 			mod, err := inf.moduleLoader(s.Path)
 			if err != nil {

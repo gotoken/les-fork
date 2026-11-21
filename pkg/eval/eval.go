@@ -35,6 +35,9 @@ func NewEvaluator() *Evaluator {
 	ev := &Evaluator{builtinsEnv: bEnv, globalEnv: NewEnvironment(bEnv)}
 	ev.initIOModule()
 	ev.initBufioModule()
+	ev.initTimeModule()
+	ev.initRandModule()
+	ev.initOSModule()
 	ev.registerBuiltins()
 	return ev
 }
