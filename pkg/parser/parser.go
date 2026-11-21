@@ -15,6 +15,7 @@ import (
 // Precedence levels for operator precedence parsing.
 const (
 	PREC_LOWEST       = iota
+	PREC_ELSE         // else (error handler)
 	PREC_PIPE         // |>
 	PREC_CALL_NOPAREN // lowest binary expr: f a + b binds as f(a + b)
 	PREC_TERNARY      // ? :
@@ -1509,6 +1510,19 @@ func (p *Parser) parseBreakStmt() *ast.BreakStmt {
 	return &ast.BreakStmt{Position: pos, Value: val}
 }
 
+func stmtEndsWithBlock(stmt ast.Stmt) bool {
+	switch s := stmt.(type) {
+	case *ast.ExprStmt:
+		return exprEndsWithBlock(s.Value)
+	case *ast.ReturnStmt:
+		return exprEndsWithBlock(s.Value)
+	case *ast.BreakStmt:
+		return exprEndsWithBlock(s.Value)
+	default:
+		return false
+	}
+}
+
 func exprEndsWithBlock(expr ast.Expr) bool {
 	if expr == nil {
 		return false
@@ -1517,9 +1531,23 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 	case *ast.MatchExpr:
 		return !e.WrappedInParens
 	case *ast.CallExpr:
-		return e.Block != nil && !e.WrappedInParens
+		if e.WrappedInParens {
+			return false
+		}
+		if e.Block != nil {
+			return true
+		}
+		return e.ParenOmitted && len(e.Args) > 0 && exprEndsWithBlock(e.Args[len(e.Args)-1])
 	case *ast.LambdaExpr:
 		return e.Expr == nil && !e.WrappedInParens
+	case *ast.ElseExpr:
+		if e.WrappedInParens {
+			return false
+		}
+		if e.IsBlock {
+			return true
+		}
+		return len(e.Body) > 0 && stmtEndsWithBlock(e.Body[len(e.Body)-1])
 	case *ast.NamedArgExpr:
 		return exprEndsWithBlock(e.Value)
 	default:
@@ -1565,10 +1593,11 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				block = p.parseBlockLiteral()
 			}
 			prefix = &ast.CallExpr{
-				Position: prefix.Pos(),
-				Callee:   prefix,
-				Args:     args,
-				Block:    block,
+				Position:     prefix.Pos(),
+				Callee:       prefix,
+				Args:         args,
+				Block:        block,
+				ParenOmitted: true,
 			}
 		}
 	}
@@ -1597,10 +1626,11 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				block = p.parseBlockLiteral()
 			}
 			prefix = &ast.CallExpr{
-				Position: prefix.Pos(),
-				Callee:   prefix,
-				Args:     args,
-				Block:    block,
+				Position:     prefix.Pos(),
+				Callee:       prefix,
+				Args:         args,
+				Block:        block,
+				ParenOmitted: true,
 			}
 		}
 	}
@@ -1947,6 +1977,8 @@ func markWrappedInParens(expr ast.Expr) {
 		e.WrappedInParens = true
 	case *ast.CallExpr:
 		e.WrappedInParens = true
+	case *ast.ElseExpr:
+		e.WrappedInParens = true
 	}
 }
 
@@ -2071,6 +2103,8 @@ func (p *Parser) parseDict() ast.Expr {
 
 func (p *Parser) peekPrecedence() int {
 	switch p.peekToken.Type {
+	case lexer.TokenElse:
+		return PREC_ELSE
 	case lexer.TokenPipeGreater:
 		return PREC_PIPE
 	case lexer.TokenQuestion:
@@ -2114,6 +2148,8 @@ func (p *Parser) peekPrecedence() int {
 
 func (p *Parser) curPrecedence() int {
 	switch p.curToken.Type {
+	case lexer.TokenElse:
+		return PREC_ELSE
 	case lexer.TokenPipeGreater:
 		return PREC_PIPE
 	case lexer.TokenQuestion:
@@ -2425,6 +2461,8 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 			Callee:   right,
 			Args:     []ast.Expr{left},
 		}
+	case lexer.TokenElse:
+		return p.parseElseExpr(left)
 	case lexer.TokenNot:
 		// expr! (postfix force)
 		return &ast.ForceExpr{
@@ -2433,6 +2471,138 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 		}
 	default:
 		return left
+	}
+}
+
+func isElseInlineStmtEnd(t lexer.TokenType) bool {
+	switch t {
+	case lexer.TokenNewline, lexer.TokenSemicolon, lexer.TokenEOF, lexer.TokenDedent,
+		lexer.TokenRParen, lexer.TokenRBracket, lexer.TokenRBrace, lexer.TokenComma, lexer.TokenColon:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Parser) parseElseExpr(left ast.Expr) ast.Expr {
+	pos := p.curPos()
+	binder := ""
+	hasColon := false
+
+	if p.peekTokenIs(lexer.TokenPipe) || p.peekTokenIs(lexer.TokenOr) {
+		if p.peekTokenIs(lexer.TokenOr) {
+			p.nextToken() // consume '||'
+			p.addError(p.curToken.Line, p.curToken.Col, "else handler binder requires a single identifier, got '||'")
+			return nil
+		}
+		p.nextToken() // consume opening '|'
+		if !p.expectPeek(lexer.TokenIdent) {
+			return nil
+		}
+		binder = p.curToken.Literal
+		if !p.expectPeek(lexer.TokenPipe) {
+			return nil
+		}
+		if !p.expectPeek(lexer.TokenColon) {
+			return nil
+		}
+		hasColon = true
+	} else if p.peekTokenIs(lexer.TokenColon) {
+		p.nextToken() // consume ':'
+		hasColon = true
+	}
+
+	if hasColon && p.peekTokenIs(lexer.TokenNewline) {
+		p.nextToken() // advance past ':'
+		p.skipNewlines()
+		if !p.curTokenIs(lexer.TokenIndent) {
+			p.addError(p.curToken.Line, p.curToken.Col, "expected indented block after 'else:'")
+			return nil
+		}
+		p.nextToken() // consume TokenIndent
+
+		body := make([]ast.Stmt, 0)
+		p.skipNewlines()
+		for !p.curTokenIs(lexer.TokenDedent) && !p.curTokenIs(lexer.TokenEOF) {
+			prevTok := p.curToken
+			stmt := p.parseStmt()
+			if stmt != nil {
+				body = append(body, stmt)
+			}
+			p.skipNewlines()
+			if p.curToken == prevTok {
+				p.nextToken()
+			}
+		}
+		if p.curTokenIs(lexer.TokenDedent) {
+			p.nextToken()
+		}
+		return &ast.ElseExpr{
+			Position: pos,
+			Left:     left,
+			Binder:   binder,
+			Body:     body,
+			IsBlock:  true,
+		}
+	}
+
+	p.nextToken() // advance to first token of inline handler
+	if p.curTokenIs(lexer.TokenNewline) {
+		p.addError(p.curToken.Line, p.curToken.Col, "expected expression or statement after 'else' (use 'else:' for a block)")
+		return nil
+	}
+	if isElseInlineStmtEnd(p.curToken.Type) {
+		p.addError(p.curToken.Line, p.curToken.Col, "expected expression or statement after 'else', got %s", lexer.FormatToken(p.curToken))
+		return nil
+	}
+
+	stmt := p.parseElseInlineStmt()
+	if stmt == nil {
+		return nil
+	}
+	return &ast.ElseExpr{
+		Position: pos,
+		Left:     left,
+		Binder:   binder,
+		Body:     []ast.Stmt{stmt},
+		IsBlock:  false,
+	}
+}
+
+func (p *Parser) parseElseInlineStmt() ast.Stmt {
+	pos := p.curPos()
+	switch p.curToken.Type {
+	case lexer.TokenReturn:
+		if isElseInlineStmtEnd(p.peekToken.Type) {
+			return &ast.ReturnStmt{Position: pos, Value: nil}
+		}
+		p.nextToken()
+		val := p.parseExpr(PREC_LOWEST)
+		return &ast.ReturnStmt{Position: pos, Value: val}
+	case lexer.TokenBreak:
+		if p.inClosureDepth <= 0 {
+			p.addError(p.curToken.Line, p.curToken.Col, "break outside of closure or loop")
+		}
+		if isElseInlineStmtEnd(p.peekToken.Type) {
+			return &ast.BreakStmt{Position: pos, Value: nil}
+		}
+		p.nextToken()
+		val := p.parseExpr(PREC_LOWEST)
+		return &ast.BreakStmt{Position: pos, Value: val}
+	case lexer.TokenContinue:
+		if p.inClosureDepth <= 0 {
+			p.addError(p.curToken.Line, p.curToken.Col, "continue outside of loop")
+		}
+		return &ast.ContinueStmt{Position: pos}
+	default:
+		prevStmtStart := p.atStatementStart
+		p.atStatementStart = true
+		val := p.parseExpr(PREC_ELSE - 1)
+		p.atStatementStart = prevStmtStart
+		if val == nil {
+			return nil
+		}
+		return &ast.ExprStmt{Position: pos, Value: val}
 	}
 }
 

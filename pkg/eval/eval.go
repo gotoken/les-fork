@@ -1518,9 +1518,121 @@ func (ev *Evaluator) EvalProgram(prog *ast.Program) (val Value, err error) {
 }
 
 func (env *Environment) isForceDemand(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
 	switch expr.(type) {
 	case *ast.ForceExpr:
 		return true
+	}
+	return containsImmediateElseExpr(expr)
+}
+
+func containsImmediateElseExpr(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case *ast.ElseExpr:
+		return true
+	case *ast.ForceExpr:
+		return containsImmediateElseExpr(e.Expr)
+	case *ast.MemberAccessExpr:
+		return containsImmediateElseExpr(e.Target)
+	case *ast.NamedArgExpr:
+		return containsImmediateElseExpr(e.Value)
+	case *ast.TupleLit:
+		for _, el := range e.Elements {
+			if containsImmediateElseExpr(el) {
+				return true
+			}
+		}
+		return false
+	case *ast.SpreadExpr:
+		return containsImmediateElseExpr(e.Expr)
+	case *ast.DictLit:
+		for _, entry := range e.Entries {
+			if containsImmediateElseExpr(entry.Key) || containsImmediateElseExpr(entry.Value) {
+				return true
+			}
+		}
+		return false
+	case *ast.IndexExpr:
+		return containsImmediateElseExpr(e.Target) || containsImmediateElseExpr(e.Index)
+	case *ast.TypeInstExpr:
+		return containsImmediateElseExpr(e.Target)
+	case *ast.BinaryExpr:
+		return containsImmediateElseExpr(e.Left) || containsImmediateElseExpr(e.Right)
+	case *ast.UnaryExpr:
+		return containsImmediateElseExpr(e.Expr)
+	case *ast.TernaryExpr:
+		return containsImmediateElseExpr(e.Cond) || containsImmediateElseExpr(e.Then) || containsImmediateElseExpr(e.Else)
+	case *ast.IsExpr:
+		return containsImmediateElseExpr(e.Expr)
+	case *ast.MatchExpr:
+		if containsImmediateElseExpr(e.Target) {
+			return true
+		}
+		for _, mc := range e.Cases {
+			if stmtsContainImmediateElseExpr(mc.Body) {
+				return true
+			}
+		}
+		return false
+	case *ast.CallExpr:
+		if containsImmediateElseExpr(e.Callee) {
+			return true
+		}
+		for _, a := range e.Args {
+			if containsImmediateElseExpr(a) {
+				return true
+			}
+		}
+		return false
+	case *ast.LambdaExpr, *ast.BlockLiteral:
+		// Closure boundaries defer execution until invoked.
+		return false
+	default:
+		return false
+	}
+}
+
+func stmtsContainImmediateElseExpr(stmts []ast.Stmt) bool {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.VarDecl:
+			if containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.UnpackDecl:
+			if containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.MemberAssignStmt:
+			if containsImmediateElseExpr(s.Target) || containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.ReturnStmt:
+			if containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.BreakStmt:
+			if containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.ExprStmt:
+			if containsImmediateElseExpr(s.Value) {
+				return true
+			}
+		case *ast.IfStmt:
+			if containsImmediateElseExpr(s.Cond) || stmtsContainImmediateElseExpr(s.ThenBody) || stmtsContainImmediateElseExpr(s.ElseBody) {
+				return true
+			}
+		case *ast.ForStmt:
+			if containsImmediateElseExpr(s.Cond) || stmtsContainImmediateElseExpr(s.Body) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -1587,6 +1699,16 @@ func (env *Environment) newThunk(expr ast.Expr) *Thunk {
 		}
 	}
 	return thunk
+}
+
+func (env *Environment) evalLazyOrForcedExpr(expr ast.Expr) Value {
+	if env.isForceDemand(expr) {
+		return env.forceExpr(expr)
+	}
+	if lit, ok := evalLiteral(expr); ok {
+		return lit
+	}
+	return env.newThunk(expr)
 }
 
 func isTypeDefRuntimeValue(v Value) bool {
@@ -2879,6 +3001,17 @@ func (env *Environment) evalExpr(expr ast.Expr) (Value, error) {
 		}
 		return &TupleValue{Elements: []Value{}}, nil
 
+	case *ast.ElseExpr:
+		val := Force(NewThunk(e.Left, env))
+		if checkValueMatchesType(val, "Error", env) {
+			execEnv := NewEnvironment(env)
+			if e.Binder != "" && e.Binder != "_" {
+				execEnv.Set(e.Binder, val)
+			}
+			return execEnv.evalBlock(e.Body)
+		}
+		return val, nil
+
 	default:
 		return nil, fmt.Errorf("unknown expression: %T", expr)
 	}
@@ -3040,11 +3173,11 @@ func (env *Environment) instantiateStruct(sDef *StructDefValue, args []ast.Expr)
 		for i := argStartIdx; i < len(args); i++ {
 			arg := args[i]
 			if named, ok := arg.(*ast.NamedArgExpr); ok {
-				fields[named.Name] = env.newThunk(named.Value)
+				fields[named.Name] = env.evalLazyOrForcedExpr(named.Value)
 			} else {
 				if posIdx < len(sDef.FieldOrder) {
 					fName := sDef.FieldOrder[posIdx]
-					fields[fName] = env.newThunk(arg)
+					fields[fName] = env.evalLazyOrForcedExpr(arg)
 					posIdx++
 				}
 			}
@@ -3130,12 +3263,12 @@ func (env *Environment) instantiateStruct(sDef *StructDefValue, args []ast.Expr)
 	for i := argStartIdx; i < len(args); i++ {
 		arg := args[i]
 		if named, ok := arg.(*ast.NamedArgExpr); ok {
-			fields[named.Name] = env.newThunk(named.Value)
+			fields[named.Name] = env.evalLazyOrForcedExpr(named.Value)
 		} else {
 			// Positional argument
 			if posIdx < len(sDef.FieldOrder) {
 				fName := sDef.FieldOrder[posIdx]
-				fields[fName] = env.newThunk(arg)
+				fields[fName] = env.evalLazyOrForcedExpr(arg)
 				posIdx++
 			}
 		}

@@ -282,7 +282,8 @@ Listed from highest to lowest precedence:
 | 13 | `\|\|` | `cond1 \|\| cond2` | `Bool` | Short-circuit logical OR |
 | 14 | `? :` | `cond ? a : b` | `Bool` (cond) | Inline ternary conditional |
 | 15 | `\|>` | `x \|> f` | Any | Pipeline operator |
-| 16 (Lowest) | *(space)* | `print x * 2 + 1` | Callable | Paren-omitted function call (weakest binding) |
+| 16 | `else` | `expr else fallback`, `expr else \|e\|: return e` | `Error`-capable | `Error`-only fallback / early-exit handler (right-associative) |
+| 17 (Lowest) | *(space)* | `print x * 2 + 1` | Callable | Paren-omitted function call (weakest binding) |
 
 #### Bitwise Operators (`~`, `&`, `^`, `|`, `<<`, `>>`)
 Les provides comprehensive bitwise operators operating on arbitrary-precision integers (`Int`):
@@ -858,3 +859,27 @@ struct ParseError:
 
 # Automatically matches `case Error:` and `is Error`!
 ```
+
+### Inline Error Handling with `else`
+To avoid deeply nested `match` branches when propagating or recovering from `Error` values, Les supports `else` as an `Error`-only handler expression:
+- **Syntax forms**:
+  - `expr else fallback` / `expr else: fallback` — evaluates to `fallback` (or runs `return` / `break` / `continue`) when `expr` evaluates to an `Error`.
+  - `expr else |err|: handler` — binds the caught `Error` value to `err` and runs a single-line handler expression or jump statement (`return`, `break`, `continue`).
+  - `expr else:` / `expr else |err|:` followed by an indented block — executes a multi-statement handler block returning the block's final expression (or unwinding via `return` / `break` / `continue`).
+- **Type narrowing & static check**:
+  - The left-hand side must have an `Error`-capable type (`T | Error`, `Error`, custom error structs, interfaces, unconstrained type parameters, or `Unknown`); concrete non-`Error` types (such as `Int`) are rejected statically.
+  - Because `else` handles `Error` values exclusively (leaving `Nil` untouched on `T | Nil | Error`), any `Error`-implementing union members are removed from the success type:
+    ```python
+    def parse_port(s: String) -> Int | Error:
+        ...
+
+    def load_port(s: String) -> Int | Error:
+        # `port` has static type `Int` (not `Int | Error`)
+        port = parse_port(s) else |err|: return err
+        port
+    ```
+  - When falling back to a value expression of type `F` (e.g. `parse_port(s) else 8080`), the resulting type is the union of the non-`Error` type `T` and `F`.
+- **Evaluation & closure semantics**:
+  - `else` eagerly forces its left-hand expression at the point of evaluation so early `return`, `break`, or `continue` executes deterministically in source order rather than being deferred inside a lazy thunk.
+  - Inside closures, `return` inside `else` follows Les's standard non-local `return` rule (exiting the enclosing `def`). To return the `Error` from a closure itself, yield `err` as the fallback value (`else |err|: err`).
+  - To pass a bare lambda literal as a non-binding fallback value, wrap it in parentheses so `|...|:` is not parsed as an error binder: `get_fn() else (|x|: x + 1)`.
