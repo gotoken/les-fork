@@ -28,16 +28,22 @@ type Evaluator struct {
 	globalEnv        *Environment
 	inferencer       *types.Inferencer
 	fileModuleLoader *FileModuleLoader
+	errorStructDef   *StructDefValue
+	termBackend      termBackend
+	termReader       *termByteReader
+	activeTermState  *termRawState
 }
 
 func NewEvaluator() *Evaluator {
 	bEnv := NewEnvironment(nil)
 	ev := &Evaluator{builtinsEnv: bEnv, globalEnv: NewEnvironment(bEnv)}
+	ev.initErrorStructDef()
 	ev.initIOModule()
 	ev.initBufioModule()
 	ev.initTimeModule()
 	ev.initRandModule()
 	ev.initOSModule()
+	ev.initTermModule()
 	ev.registerBuiltins()
 	return ev
 }
@@ -97,6 +103,7 @@ func (ev *Evaluator) SetErrorOutput(w io.Writer) {
 
 func (ev *Evaluator) SetInput(r io.Reader) {
 	ev.builtinsEnv.RawStdin = r
+	ev.termReader = nil
 	if r != nil {
 		ev.builtinsEnv.StdinReader = bufio.NewReader(r)
 	} else {
@@ -127,6 +134,70 @@ func (ev *Evaluator) SetFileModuleLoader(fml *FileModuleLoader) {
 		fml.SetParentEnv(ev.builtinsEnv)
 		ev.builtinsEnv.Loader = fml.Load
 		ev.globalEnv.Loader = fml.Load
+	}
+}
+
+// initErrorStructDef initializes the shared SimpleError struct definition on ev.
+func (ev *Evaluator) initErrorStructDef() {
+	errorMethodFuncType := &types.FuncType{
+		Arg: &types.TupleType{Elems: []types.Type{}},
+		Ret: types.TypeString,
+	}
+	ev.errorStructDef = &StructDefValue{
+		Name:          "SimpleError",
+		FieldOrder:    []string{"message"},
+		FieldDefaults: make(map[string]ast.Expr),
+		EmbeddedNames: []string{},
+		Methods: map[string]*ast.FuncDef{
+			"Message": {
+				Name: "Message",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
+				},
+			},
+			"Inspect": {
+				Name: "Inspect",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{
+						Value: &ast.BinaryExpr{
+							Op:    "+",
+							Left:  &ast.StringLit{Value: "Error: "},
+							Right: &ast.Identifier{Name: "message"},
+						},
+					},
+				},
+			},
+			"Error": {
+				Name: "Error",
+				Body: []ast.Stmt{
+					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
+				},
+			},
+		},
+		Env: ev.builtinsEnv,
+		StructType: &types.StructType{
+			Name: "SimpleError",
+			Fields: map[string]types.Type{
+				"message": types.TypeString,
+			},
+			FieldOrder: []string{"message"},
+			Methods: map[string]*types.FuncType{
+				"Message": errorMethodFuncType,
+				"Inspect": errorMethodFuncType,
+				"Error":   errorMethodFuncType,
+			},
+		},
+	}
+}
+
+// newErrorValue constructs a SimpleError instance satisfying interface Error.
+func (ev *Evaluator) newErrorValue(msg string) Value {
+	return &StructInstance{
+		Def: ev.errorStructDef,
+		Fields: map[string]Value{
+			"message": StringValue(msg),
+		},
+		Embedded: make(map[string]*StructInstance),
 	}
 }
 
@@ -279,57 +350,7 @@ func (ev *Evaluator) registerBuiltins() {
 		},
 	})
 
-	// Built-in Error constructor & default Error struct definition
-	errorMethodFuncType := &types.FuncType{
-		Arg: &types.TupleType{Elems: []types.Type{}},
-		Ret: types.TypeString,
-	}
-	errorStructDef := &StructDefValue{
-		Name:          "SimpleError",
-		FieldOrder:    []string{"message"},
-		FieldDefaults: make(map[string]ast.Expr),
-		EmbeddedNames: []string{},
-		Methods: map[string]*ast.FuncDef{
-			"Message": {
-				Name: "Message",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
-				},
-			},
-			"Inspect": {
-				Name: "Inspect",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{
-						Value: &ast.BinaryExpr{
-							Op:    "+",
-							Left:  &ast.StringLit{Value: "Error: "},
-							Right: &ast.Identifier{Name: "message"},
-						},
-					},
-				},
-			},
-			"Error": {
-				Name: "Error",
-				Body: []ast.Stmt{
-					&ast.ReturnStmt{Value: &ast.Identifier{Name: "message"}},
-				},
-			},
-		},
-		Env: ev.builtinsEnv,
-		StructType: &types.StructType{
-			Name: "SimpleError",
-			Fields: map[string]types.Type{
-				"message": types.TypeString,
-			},
-			FieldOrder: []string{"message"},
-			Methods: map[string]*types.FuncType{
-				"Message": errorMethodFuncType,
-				"Inspect": errorMethodFuncType,
-				"Error":   errorMethodFuncType,
-			},
-		},
-	}
-
+	// Built-in Error constructor using shared SimpleError struct definition
 	ev.builtinsEnv.Set("Error", &BuiltinFunc{
 		Name: "Error",
 		FuncType: &types.FuncType{
@@ -343,15 +364,7 @@ func (ev *Evaluator) registerBuiltins() {
 			if len(args) > 0 {
 				msg = Force(args[0]).String()
 			}
-			fields := map[string]Value{
-				"message": StringValue(msg),
-			}
-			inst := &StructInstance{
-				Def:      errorStructDef,
-				Fields:   fields,
-				Embedded: make(map[string]*StructInstance),
-			}
-			return inst, nil
+			return ev.newErrorValue(msg), nil
 		},
 	})
 
@@ -6192,7 +6205,11 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 					if len(parts) == 2 && si.Def.Name == parts[1] {
 						if sEnv != nil {
 							if modVal, found := sEnv.GetModule(parts[0]); found {
-								if expVal, ok := modVal.Exports[parts[1]]; ok {
+								expVal, ok := modVal.Exports[parts[1]]
+								if !ok && modVal.Types != nil {
+									expVal, ok = modVal.Types[parts[1]]
+								}
+								if ok {
 									forcedExp := Force(expVal)
 									if bf, isBF := forcedExp.(*BuiltinFunc); isBF && bf.TypeDef != nil {
 										forcedExp = Force(bf.TypeDef)
@@ -6347,7 +6364,11 @@ func checkValueMatchesType(val Value, typeAnnot string, optEnv ...*Environment) 
 				modName := parts[0]
 				typeName := parts[1]
 				if modVal, found := searchEnv.GetModule(modName); found {
-					if expVal, ok := modVal.Exports[typeName]; ok {
+					expVal, ok := modVal.Exports[typeName]
+					if !ok && modVal.Types != nil {
+						expVal, ok = modVal.Types[typeName]
+					}
+					if ok {
 						forcedExp := Force(expVal)
 						// If the exported item is a constructor BuiltinFunc with TypeDef, unwrap it
 						if bf, isBF := forcedExp.(*BuiltinFunc); isBF && bf.TypeDef != nil {

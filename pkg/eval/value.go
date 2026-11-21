@@ -779,6 +779,7 @@ func (b *BuiltinFunc) String() string { return fmt.Sprintf("<builtin %s>", b.Nam
 type ModuleValue struct {
 	Name    string
 	Exports map[string]Value
+	Types   map[string]Value
 }
 
 func (m *ModuleValue) String() string { return fmt.Sprintf("<module %s>", m.Name) }
