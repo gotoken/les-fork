@@ -14,8 +14,8 @@ Thumbs.db
 .omg/
 
 # Owner's temporary test
-*.les
-*.sh
+/*.les
+/*.sh
 
 # Temporary files
 tmp/
