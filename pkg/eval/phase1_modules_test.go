@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"les/pkg/lexer"
+	"les/pkg/parser"
+	"les/pkg/types"
 )
 
 func TestTimeModule(t *testing.T) {
@@ -354,5 +359,71 @@ func TestParseSleepDurationPositiveAndBigInt(t *testing.T) {
 	posBig := NewIntValueFromBig(new(big.Int).Lsh(big.NewInt(1), 100))
 	if _, err := parseSleepDuration(posBig); err == nil {
 		t.Fatalf("expected overflow error for positive big int")
+	}
+}
+
+func TestPhase1ModulesAcrossImportedFileModule(t *testing.T) {
+	tempDir := t.TempDir()
+	modCode := `
+module customrng
+import rand
+import time
+import os
+
+struct StepSource:
+    v: Int
+    def Next() -> (Int, StepSource):
+        (@v, StepSource(@v + 1))
+
+def MakeSource(start: Int) -> StepSource:
+    StepSource(start)
+
+def CurrentPid() -> Int:
+    os::Getpid()
+
+def NowUnix() -> Int:
+    time::Unix()
+`
+	if err := os.WriteFile(filepath.Join(tempDir, "customrng.les"), []byte(modCode), 0o644); err != nil {
+		t.Fatalf("failed to write module: %v", err)
+	}
+
+	// Main defines an incompatible struct sharing the name StepSource to verify
+	// runtime Source verification uses the imported struct's own module Env.
+	mainCode := `
+import customrng
+import rand
+
+struct StepSource:
+    label: String
+    def Next() -> Int:
+        0
+
+def wrap_unknown(x):
+    rand::Rand(x)
+
+src = customrng::MakeSource(77)
+rng = wrap_unknown(src)
+a = rng.Uint64()!
+b = rng.Uint64()!
+print (a == 77 && b == 78), "|", customrng::CurrentPid() > 0, "|", customrng::NowUnix() > 1_000_000_000
+`
+	prog := parser.NewParser(lexer.NewLexer(mainCode)).ParseProgram()
+	inf := types.NewInferencer()
+	inf.SetModuleLoader(types.NewFileModuleLoader(tempDir).Load)
+	if err := inf.InferProgram(prog); err != nil {
+		t.Fatalf("unexpected type error: %v", err)
+	}
+
+	ev := NewEvaluator()
+	ev.SetInferencer(inf)
+	ev.SetFileModuleLoader(NewFileModuleLoader(tempDir))
+	var out strings.Builder
+	ev.SetOutput(&out)
+	if _, err := ev.EvalProgram(prog); err != nil {
+		t.Fatalf("unexpected eval error: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "true|true|true" {
+		t.Fatalf("expected true|true|true, got %q", out.String())
 	}
 }

@@ -78,6 +78,13 @@ type randCursor struct {
 	current     Value
 }
 
+func sourceCheckEnv(val Value, fallback *Environment) *Environment {
+	if si, ok := val.(*StructInstance); ok && si.Def != nil && si.Def.Env != nil {
+		return si.Def.Env
+	}
+	return fallback
+}
+
 func (c *randCursor) nextUint64() (uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -109,7 +116,7 @@ func (c *randCursor) nextUint64() (uint64, error) {
 		return 0, fmt.Errorf("rand: Source.Next()[0] out of uint64 range [0, 2^64): %s", iv.String())
 	}
 	nextSrc := Force(tv.Elements[1])
-	if !valueImplementsInterfaceValue(nextSrc, c.sourceIface, c.ev.globalEnv) {
+	if !valueImplementsInterfaceValue(nextSrc, c.sourceIface, sourceCheckEnv(nextSrc, c.ev.globalEnv)) {
 		return 0, fmt.Errorf("rand: Source.Next()[1] must implement rand::Source, got %s", typeNameOf(nextSrc))
 	}
 	c.current = nextSrc
@@ -374,7 +381,7 @@ func (ev *Evaluator) initRandModule() {
 				src = newSeedSourceInstance(st)
 			} else {
 				src = Force(args[0])
-				if !valueImplementsInterfaceValue(src, sourceIface, ev.globalEnv) {
+				if !valueImplementsInterfaceValue(src, sourceIface, sourceCheckEnv(src, ev.globalEnv)) {
 					return nil, fmt.Errorf("Rand requires a rand::Source value, got %s", typeNameOf(src))
 				}
 			}

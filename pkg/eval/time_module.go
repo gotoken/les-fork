@@ -13,15 +13,12 @@ func (ev *Evaluator) initTimeModule() {
 	monoOrigin := time.Now()
 	timeExports := make(map[string]Value)
 
-	noArgIntType := &types.FuncType{
-		Arg: &types.TupleType{Elems: []types.Type{}},
-		Ret: types.TypeInt,
-	}
+	timeModType := types.NewBuiltinModuleType("time")
 
 	newClockFunc := func(name string, read func() int64) *BuiltinFunc {
 		return &BuiltinFunc{
 			Name:     name,
-			FuncType: noArgIntType,
+			FuncType: timeModType.Exports[name].(*types.FuncType),
 			Fn: func(args []Value) (Value, error) {
 				if len(args) != 0 {
 					return nil, fmt.Errorf("%s expects 0 arguments, got %d", name, len(args))
@@ -38,11 +35,8 @@ func (ev *Evaluator) initTimeModule() {
 	timeExports["MonotonicNano"] = newClockFunc("MonotonicNano", func() int64 { return time.Since(monoOrigin).Nanoseconds() })
 
 	timeExports["Sleep"] = &BuiltinFunc{
-		Name: "Sleep",
-		FuncType: &types.FuncType{
-			Arg: &types.TupleType{Elems: []types.Type{types.NewUnionType(types.TypeInt, types.TypeFloat)}},
-			Ret: &types.TupleType{Elems: []types.Type{}},
-		},
+		Name:     "Sleep",
+		FuncType: timeModType.Exports["Sleep"].(*types.FuncType),
 		Fn: func(args []Value) (Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("Sleep expects 1 argument, got %d", len(args))

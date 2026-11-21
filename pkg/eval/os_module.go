@@ -9,14 +9,12 @@ import (
 
 // initOSModule registers the built-in os module.
 func (ev *Evaluator) initOSModule() {
+	osModType := types.NewBuiltinModuleType("os")
 	osExports := make(map[string]Value)
 
 	osExports["Getpid"] = &BuiltinFunc{
-		Name: "Getpid",
-		FuncType: &types.FuncType{
-			Arg: &types.TupleType{Elems: []types.Type{}},
-			Ret: types.TypeInt,
-		},
+		Name:     "Getpid",
+		FuncType: osModType.Exports["Getpid"].(*types.FuncType),
 		Fn: func(args []Value) (Value, error) {
 			if len(args) != 0 {
 				return nil, fmt.Errorf("Getpid expects 0 arguments, got %d", len(args))
@@ -26,11 +24,8 @@ func (ev *Evaluator) initOSModule() {
 	}
 
 	osExports["Getenv"] = &BuiltinFunc{
-		Name: "Getenv",
-		FuncType: &types.FuncType{
-			Arg: &types.TupleType{Elems: []types.Type{types.TypeString}},
-			Ret: types.NewUnionType(types.TypeString, types.TypeNil),
-		},
+		Name:     "Getenv",
+		FuncType: osModType.Exports["Getenv"].(*types.FuncType),
 		Fn: func(args []Value) (Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("Getenv expects 1 argument, got %d", len(args))
