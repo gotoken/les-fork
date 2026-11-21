@@ -2269,6 +2269,7 @@ func (env *Environment) evalStmt(stmt ast.Stmt) (Value, error) {
 				aliasedMod := &ModuleValue{
 					Name:    alias,
 					Exports: existingMod.Exports,
+					Types:   existingMod.Types,
 				}
 				env.RegisterModule(aliasedMod)
 			}
@@ -2287,12 +2288,12 @@ func (env *Environment) evalStmt(stmt ast.Stmt) (Value, error) {
 		}
 		// Register module with alias name
 		// Register module with alias name without mutating cached modVal
-		env.RegisterModule(&ModuleValue{Name: alias, Exports: modVal.Exports})
+		env.RegisterModule(&ModuleValue{Name: alias, Exports: modVal.Exports, Types: modVal.Types})
 		if s.Path != alias {
-			env.RegisterModule(&ModuleValue{Name: s.Path, Exports: modVal.Exports})
+			env.RegisterModule(&ModuleValue{Name: s.Path, Exports: modVal.Exports, Types: modVal.Types})
 		}
 		if canonicalName != "" && canonicalName != alias && canonicalName != s.Path {
-			env.RegisterModule(&ModuleValue{Name: canonicalName, Exports: modVal.Exports})
+			env.RegisterModule(&ModuleValue{Name: canonicalName, Exports: modVal.Exports, Types: modVal.Types})
 		}
 		return nil, nil
 

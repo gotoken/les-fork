@@ -580,7 +580,7 @@ func (ev *Evaluator) initTermModule() {
 				}
 				ms, ok := iv.Int64()
 				if !ok {
-					return nil, fmt.Errorf("ReadByte: timeout value out of range %s", iv.String())
+					return ev.newErrorValue(fmt.Sprintf("timeout value out of range: %s", iv.String())), nil
 				}
 				timeoutMs = ms
 			}

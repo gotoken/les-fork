@@ -474,11 +474,31 @@ print r is Error
 		codeOverflow := `
 import term
 r = term::ReadByte(9999999999999999)!
-print r is Error
+r2 = term::ReadByte(99999999999999999999)!
+print r is Error, "|", r2 is Error
 `
 		out2, _, err := evalTermScript(t, codeOverflow, nil, strings.NewReader("a"))
-		if err != nil || out2 != "true" {
-			t.Fatalf("got (%q, %v), want (\"true\", nil)", out2, err)
+		if err != nil || out2 != "true|true" {
+			t.Fatalf("got (%q, %v), want (\"true|true\", nil)", out2, err)
+		}
+	})
+
+	t.Run("aliased import preserves ModuleValue.Types for is checks", func(t *testing.T) {
+		mock := &mockTermBackend{ttyFDs: map[int]bool{0: true, 1: true}}
+		code := `
+import term as tr
+st = tr::MakeRaw()!
+s = tr::Stdin
+print s is tr::Stream, "|", st is tr::State
+if st is tr::State:
+    tr::Restore(st)
+`
+		out, ev, err := evalTermScript(t, code, mock, strings.NewReader(""))
+		if err != nil || out != "true|true" {
+			t.Fatalf("got (%q, %v), want (\"true|true\", nil)", out, err)
+		}
+		if len(ev.activeTermStates) != 0 {
+			t.Fatalf("expected activeTermStates restored, got %d", len(ev.activeTermStates))
 		}
 	})
 
