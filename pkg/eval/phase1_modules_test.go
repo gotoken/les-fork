@@ -126,6 +126,23 @@ struct MyLCG:
         n = (@state * 6364136223846793005 + 1442695040888963407) & 0xFFFF_FFFF_FFFF_FFFF
         (n, MyLCG(n))
 
+struct InferredSource:
+    n: Int
+    def Next():
+        (@n, InferredSource(@n + 1))
+
+struct SkippingSource:
+    inner: rand::Source
+    def Next() -> (Int, SkippingSource):
+        (_, s1) = @inner.Next()
+        (v, s2) = s1.Next()
+        (v, SkippingSource(s2))
+
+seedSrc = rand::Seed(42)
+(vA, _) = seedSrc.Next()
+(vB, _) = seedSrc.Next()
+immutableOk = vA == vB
+
 src = MyLCG(12345)
 rng = rand::Rand(src)
 a = rng.Uint64()!
@@ -133,13 +150,27 @@ b = rng.Uint64()!
 n = rng.Number(6)!
 f = rng.Fraction()!
 
-print (src is rand::Source), "|", a != b, "|", (n >= 0 && n < 6), "|", (f >= 0.0 && f < 1.0)
+infSrc = InferredSource(10)
+infRng = rand::Rand(infSrc)
+infA = infRng.Uint64()!
+infB = infRng.Uint64()!
+
+skipRng = rand::Rand(SkippingSource(rand::Seed(99)))
+skipV = skipRng.Uint64()!
+rawRng = rand::Rand(rand::Seed(99))
+_ = rawRng.Uint64()!
+rawSecond = rawRng.Uint64()!
+
+d = rand::Number(1000)
+sharedThunkOk = (d == d)
+
+print immutableOk, "|", (src is rand::Source), "|", a != b, "|", (n >= 0 && n < 6), "|", (f >= 0.0 && f < 1.0), "|", (infSrc is rand::Source), "|", (infA == 10 && infB == 11), "|", (skipV == rawSecond), "|", sharedThunkOk
 `
 	out, err := runLesChecked(code)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != "true|true|true|true" {
+	if out != "true|true|true|true|true|true|true|true|true" {
 		t.Fatalf("unexpected custom source output: %q", out)
 	}
 }
@@ -193,6 +224,24 @@ def wrap_unknown(x):
 wrap_unknown(123)
 `,
 			errSub: "requires a rand::Source",
+		},
+		{
+			name: "Custom Source invalid Next step transition rejected immediately",
+			code: `
+import rand
+struct BadNext:
+    def Next(x: Int) -> Int:
+        x
+def dyn_val(x): x
+struct StepBroken:
+    def Next():
+        (1, dyn_val(BadNext()))
+def wrap_unknown(x):
+    rand::Rand(x)
+rng = wrap_unknown(StepBroken())
+rng.Uint64()!
+`,
+			errSub: "must implement rand::Source",
 		},
 		{
 			name: "Custom Source negative uint64",
@@ -255,5 +304,55 @@ print pid, "|", (v is String ? v : "bad"), "|", (e == ""), "|", (m is Nil)
 	want := fmt.Sprintf("%d|hello-les|true|true", os.Getpid())
 	if out != want {
 		t.Fatalf("expected %q, got %q", want, out)
+	}
+}
+
+func TestDynamicUnknownTypeErrorsPhase1(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+	}{
+		{
+			name: "time Sleep non-numeric via Unknown",
+			code: `
+import time
+def s(x):
+    time::Sleep(x)
+s("bad")
+`,
+		},
+		{
+			name: "os Getenv non-String via Unknown",
+			code: `
+import os
+def g(x):
+    os::Getenv(x)!
+g(123)
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := runLesChecked(tc.code); err == nil {
+				t.Fatalf("expected runtime error for %s, got nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestParseSleepDurationPositiveAndBigInt(t *testing.T) {
+	d, err := parseSleepDuration(NewIntValue(2))
+	if err != nil || d != 2*time.Second {
+		t.Fatalf("expected 2s, got (%v, %v)", d, err)
+	}
+	negBig := NewIntValueFromBig(new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 100)))
+	dNeg, err := parseSleepDuration(negBig)
+	if err != nil || dNeg != 0 {
+		t.Fatalf("expected 0s for negative big int, got (%v, %v)", dNeg, err)
+	}
+	posBig := NewIntValueFromBig(new(big.Int).Lsh(big.NewInt(1), 100))
+	if _, err := parseSleepDuration(posBig); err == nil {
+		t.Fatalf("expected overflow error for positive big int")
 	}
 }

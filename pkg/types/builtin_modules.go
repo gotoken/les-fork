@@ -8,6 +8,14 @@ var builtinModuleFactories = map[string]func(alias string) *ModuleType{
 	"os":    makeOsModuleType,
 }
 
+// NewBuiltinModuleType constructs a fresh ModuleType for a known built-in module, or returns nil.
+func NewBuiltinModuleType(name string) *ModuleType {
+	if factory, ok := builtinModuleFactories[name]; ok {
+		return factory(name)
+	}
+	return nil
+}
+
 func initDefaultBuiltinModules() map[string]*ModuleType {
 	mods := make(map[string]*ModuleType, len(builtinModuleFactories))
 	for name, factory := range builtinModuleFactories {

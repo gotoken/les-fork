@@ -44,6 +44,18 @@ struct MyLCG:
         n = (@state * 6364136223846793005 + 1442695040888963407) & 0xFFFF_FFFF_FFFF_FFFF
         (n, MyLCG(n))
 
+struct InferredSource:
+    n: Int
+    def Next():
+        (@n, InferredSource(@n + 1))
+
+struct SkippingSource:
+    inner: rand::Source
+    def Next() -> (Int, SkippingSource):
+        (_, s1) = @inner.Next()
+        (v, s2) = s1.Next()
+        (v, SkippingSource(s2))
+
 s0: rand::Source = rand::Seed()
 s1: rand::Source = rand::Seed(42)
 s2: rand::Source = r::Seed("hello")
@@ -51,6 +63,8 @@ s2: rand::Source = r::Seed("hello")
 r0: rand::Rand = rand::Rand()
 r1: rand::Rand = rand::Rand(s1)
 r2: r::Rand = r::Rand(MyLCG(1))
+r3: rand::Rand = rand::Rand(InferredSource(1))
+r4: rand::Rand = rand::Rand(SkippingSource(s1))
 n1: Int = r2.Number(10)
 u1: Int = r2.Uint64()
 f1: Float = r2.Fraction()
@@ -63,6 +77,8 @@ def accept_source(src: rand::Source) -> Int:
 
 p1: Int = accept_source(MyLCG(7))
 p2: Int = accept_source(s3)
+p3: Int = accept_source(InferredSource(3))
+p4: Int = accept_source(SkippingSource(s1))
 
 pid: Int = os::Getpid()
 pid2: Int = o::Getpid()

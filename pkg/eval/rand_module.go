@@ -72,9 +72,10 @@ func uint64ToLesInt(u uint64) IntValue {
 }
 
 type randCursor struct {
-	mu      sync.Mutex
-	ev      *Evaluator
-	current Value
+	mu          sync.Mutex
+	ev          *Evaluator
+	sourceIface *InterfaceDefValue
+	current     Value
 }
 
 func (c *randCursor) nextUint64() (uint64, error) {
@@ -108,14 +109,10 @@ func (c *randCursor) nextUint64() (uint64, error) {
 		return 0, fmt.Errorf("rand: Source.Next()[0] out of uint64 range [0, 2^64): %s", iv.String())
 	}
 	nextSrc := Force(tv.Elements[1])
-	nextSI, ok := nextSrc.(*StructInstance)
-	if !ok {
-		return 0, fmt.Errorf("rand: Source.Next()[1] must be a Source struct, got %s", typeNameOf(nextSrc))
+	if !valueImplementsInterfaceValue(nextSrc, c.sourceIface, c.ev.globalEnv) {
+		return 0, fmt.Errorf("rand: Source.Next()[1] must implement rand::Source, got %s", typeNameOf(nextSrc))
 	}
-	if _, err := nextSI.LookupMember("Next"); err != nil {
-		return 0, fmt.Errorf("rand: Source.Next()[1] missing Next method: %w", err)
-	}
-	c.current = nextSI
+	c.current = nextSrc
 	return u64, nil
 }
 
@@ -231,10 +228,12 @@ func (ev *Evaluator) initRandModule() {
 		Env: ev.globalEnv,
 	}
 
-	nextFuncType := &types.FuncType{
-		Arg: &types.TupleType{Elems: []types.Type{}},
-		Ret: &types.TupleType{Elems: []types.Type{types.TypeInt, types.TypeSelf}},
-	}
+	randModType := types.NewBuiltinModuleType("rand")
+	sourceIfaceType := randModType.Types["Source"].(*types.InterfaceType)
+	randStructType := randModType.Types["Rand"].(*types.StructType)
+	nextFuncType := sourceIfaceType.Methods["Next"]
+	seedFuncType := randModType.Exports["Seed"].(*types.FuncType)
+	randCtorFuncType := randModType.Exports["Rand"].(*types.FuncType)
 
 	var newSeedSourceInstance func(state randState) *StructInstance
 	newSeedSourceInstance = func(state randState) *StructInstance {
@@ -262,41 +261,9 @@ func (ev *Evaluator) initRandModule() {
 		return inst
 	}
 
-	sourceIfaceType := &types.InterfaceType{
-		Name: "rand.Source",
-		Methods: map[string]*types.FuncType{
-			"Next": {
-				Arg: &types.TupleType{Elems: []types.Type{}},
-				Ret: &types.TupleType{Elems: []types.Type{types.TypeInt, types.TypeSelf}},
-			},
-		},
-	}
-	randStructType := &types.StructType{
-		Name: "rand.Rand",
-		Methods: map[string]*types.FuncType{
-			"Uint64": {
-				Arg: &types.TupleType{Elems: []types.Type{}},
-				Ret: types.TypeInt,
-			},
-			"Number": {
-				Arg: &types.TupleType{Elems: []types.Type{types.TypeInt}},
-				Ret: types.TypeInt,
-			},
-			"Fraction": {
-				Arg: &types.TupleType{Elems: []types.Type{}},
-				Ret: types.TypeFloat,
-			},
-		},
-	}
-
 	seedBuiltin := &BuiltinFunc{
-		Name: "Seed",
-		FuncType: &types.FuncType{
-			Arg:      &types.TupleType{Elems: []types.Type{types.NewUnionType(types.TypeInt, types.TypeString)}},
-			MinArity: 0,
-			MaxArity: 1,
-			Ret:      sourceIfaceType,
-		},
+		Name:     "Seed",
+		FuncType: seedFuncType,
 		Fn: func(args []Value) (Value, error) {
 			if len(args) > 1 {
 				return nil, fmt.Errorf("Seed expects 0 or 1 argument, got %d", len(args))
@@ -342,7 +309,7 @@ func (ev *Evaluator) initRandModule() {
 	}
 
 	newRandInstance := func(src Value) *StructInstance {
-		cursor := &randCursor{ev: ev, current: src}
+		cursor := &randCursor{ev: ev, sourceIface: sourceIface, current: src}
 		inst := &StructInstance{
 			Def:      randDef,
 			Fields:   make(map[string]Value),
@@ -391,14 +358,9 @@ func (ev *Evaluator) initRandModule() {
 	}
 
 	randConstructor := &BuiltinFunc{
-		Name:    "Rand",
-		TypeDef: randDef,
-		FuncType: &types.FuncType{
-			Arg:      &types.TupleType{Elems: []types.Type{sourceIfaceType}},
-			MinArity: 0,
-			MaxArity: 1,
-			Ret:      randStructType,
-		},
+		Name:     "Rand",
+		TypeDef:  randDef,
+		FuncType: randCtorFuncType,
 		Fn: func(args []Value) (Value, error) {
 			if len(args) > 1 {
 				return nil, fmt.Errorf("Rand expects 0 or 1 argument, got %d", len(args))
