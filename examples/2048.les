@@ -1,0 +1,421 @@
+# 2048 — the sliding-tile puzzle, written standalone in Les
+#
+#   les examples/2048.les [seed] [--raw]
+#
+# On an interactive terminal, raw mode, cursor hiding, Windows VT output,
+# signal-safe restoration (SIGINT/SIGTERM/SIGHUP), and arrow keys (as well as
+# w/a/s/d, k/h/j/l, u, n, q, Ctrl-C/Ctrl-D) work natively without pressing Enter
+# or any external wrapper script.
+# When stdin/stdout is piped, reads line-oriented commands; several keys on one
+# line ("aaws") are applied in order.
+#   u : undo (unlimited — every state is immutable, so the history is free)
+#   n : new game
+#   q : quit
+# --raw forces the line-oriented raw-prompt UI (for external line front ends).
+#
+# The file reads top-down, from the whole program to the details:
+#
+#   main    terminal setup and game loop
+#   Game    what a key press does: score, undo, winning and losing
+#   Board   the 4x4 grid: sliding in a direction, dropping new tiles
+#   Line    the 2048 rule itself, on a single line of tiles
+#   View    drawing a game as coloured text
+#   Input   command line, raw key / ESC decoding, and line fallback
+#   Tuples  small generic helpers (map, filter, fold, ...)
+#
+# Credits:
+#   Original author: gotoken+github@gmail.com
+#   Updated for Les standard library changes (`rand`, `term`, `signal`) by usa
+
+import rand
+import signal
+import term
+
+def main():
+    (rng, raw_flag) = parse_args(Args)
+    use_tty = !raw_flag && term::IsTerminal()
+    term::EnableVT()
+    clear_screen()
+    run_game(rng, raw_flag || use_tty, use_tty) |> farewell |> print
+
+# ==================================================================
+# Game
+#
+# A Game is an immutable snapshot. Every key returns a new Game that
+# remembers the previous one, so undo is just "go back to prev".
+# ==================================================================
+GOAL = 2048
+
+struct Game:
+    board: ((Int, ...), ...)
+    rng: rand::Source
+    score: Int = 0
+    prev: Game | Nil = nil
+    msg: String = ""
+    won: Bool = false
+    over: Bool = false
+    quit: Bool = false
+
+    def PressAll(keys: String) -> Game:
+        fold(range(keys.Len()), self, |g: Game, i: Int|: g.quit ? g : g.Press(keys[i]))
+
+    def Press(key: String) -> Game:
+        match key:
+            case /^[aAh]$/:
+                @Move("left")
+            case /^[dDl]$/:
+                @Move("right")
+            case /^[wWk]$/:
+                @Move("up")
+            case /^[sSj]$/:
+                @Move("down")
+            case /^[uU]$/:
+                @Undo()
+            case /^[nN]$/:
+                new_game(@rng)
+            case /^[qQ]$/:
+                Game(self, quit: true)
+            case /^\s$/:
+                self
+            case _:
+                @Say("Unknown key '" + key + "'. Use w/a/s/d, u, n, q.")
+
+    def Move(dir: String) -> Game:
+        if @over:
+            @Say("No moves left — u to undo, n for a new game.")
+        else:
+            (board, gained) = slide(@board, dir)
+            if board == @board:
+                @Say("Nothing moves that way.")
+            else:
+                Game(self, board: board, score: @score + gained, prev: self, msg: "").Spawn().Judge()
+
+    def Spawn() -> Game:
+        (board, rng) = spawn(@board, @rng)
+        Game(self, board: board, rng: rng)
+
+    def Judge() -> Game:
+        if !@won && @Best() >= GOAL:
+            Game(self, won: true, msg: "*** 2048! You win. Keep going, or q to quit. ***")
+        else:
+            if movable(@board):
+                self
+            else:
+                Game(self, over: true, msg: "Game over. u to undo, n for a new game, q to quit.")
+
+    def Undo() -> Game:
+        p = @prev
+        match p:
+            case Game:
+                Game(p, msg: "Undone.")
+            case _:
+                @Say("Nothing to undo.")
+
+    def Best() -> Int:
+        best(@board)
+
+    def Say(text: String) -> Game:
+        Game(self, msg: text)
+
+def new_game(rng: rand::Source) -> Game:
+    Game(empty_board(), rng: rng).Spawn().Spawn()
+
+def run_game(rng: rand::Source, raw_ui: Bool, use_tty: Bool) -> Game:
+    initial = new_game(rng)
+    if use_tty:
+        signal::Catch()
+        res: Game | Error = term::WithRaw() do:
+            term::WithHiddenCursor() do:
+                play(initial, true, true)
+        res!  # Must be forced before signal::Reset()
+        signal::Reset()
+        match res:
+            case Game:
+                res
+            case Error:
+                print "\nTerminal error: ", res.Message(), "\n"
+                initial
+    else:
+        play(initial, raw_ui, false)
+
+def play(game: Game, raw_ui: Bool, raw_input: Bool) -> Game:
+    for:
+        print render(game, raw_ui)
+        keys: String = raw_input ? read_key_raw() : read_keys()
+        game = game.PressAll(keys)
+        if game.quit:
+            break
+    game
+
+# ==================================================================
+# Board
+#
+# A board is a tuple of rows. Only one move is really implemented:
+# sliding left. Every other direction turns the board so that it
+# points left, slides, and turns it back.
+# ==================================================================
+SIZE = 4
+DIRS = ("left", "right", "up", "down")
+
+def slide(board: ((Int, ...), ...), dir: String) -> (((Int, ...), ...), Int):
+    (moved, gained) = slide_left(turn(board, dir))
+    (unturn(moved, dir), gained)
+
+# Dict values are lazy: only the view that is asked for gets built.
+def turn(board: ((Int, ...), ...), dir: String) -> ((Int, ...), ...):
+    {"left": board, "right": map(board, reverse),
+     "up": transpose(board), "down": map(transpose(board), reverse)}[dir]
+
+def unturn(board: ((Int, ...), ...), dir: String) -> ((Int, ...), ...):
+    {"left": board, "right": map(board, reverse),
+     "up": transpose(board), "down": transpose(map(board, reverse))}[dir]
+
+def slide_left(board: ((Int, ...), ...)) -> (((Int, ...), ...), Int):
+    results: (((Int, ...), Int), ...) = map(board, slide_line)
+    (map(results, |r: ((Int, ...), Int)|: r[0]), fold(results, 0, |sum: Int, r: ((Int, ...), Int)|: sum + r[1]))
+
+def movable(board: ((Int, ...), ...)) -> Bool:
+    any(DIRS, |dir: String|: slide(board, dir)[0] != board)
+
+def best(board: ((Int, ...), ...)) -> Int:
+    fold(board, 0, |m: Int, row: (Int, ...)|: fold(row, m, max))
+
+def empty_board() -> ((Int, ...), ...):
+    map(range(SIZE), |r: Int|: map(range(SIZE), |c: Int|: 0))
+
+# Drop a 2 (or, one time in ten, a 4) on a random empty cell.
+def spawn(board: ((Int, ...), ...), rng: rand::Source) -> (((Int, ...), ...), rand::Source):
+    free: ((Int, Int), ...) = empty_cells(board)
+    if free.Len() == 0:
+        (board, rng)
+    else:
+        (where, r1) = rng.Next()
+        (which, r2) = r1.Next()
+        (r, c) = free[where % free.Len()]
+        (place(board, r, c, which % 10 == 0 ? 4 : 2), r2)
+
+def empty_cells(board: ((Int, ...), ...)) -> ((Int, Int), ...):
+    all: ((Int, Int), ...) = map(range(SIZE * SIZE), |i: Int|: (i / SIZE, i % SIZE))
+    filter(all, |rc: (Int, Int)|: board[rc[0]][rc[1]] == 0)
+
+def place(board: ((Int, ...), ...), r: Int, c: Int, v: Int) -> ((Int, ...), ...):
+    replace(board, r, replace(board[r], c, v))
+
+# ==================================================================
+# Line — the rule of 2048, for one line sliding toward its start
+#
+#   (2, 2, 2, 2) -> (4, 4, 0, 0), +8
+#   (0, 4, 2, 2) -> (4, 4, 0, 0), +4
+# ==================================================================
+def slide_line(line: (Int, ...)) -> ((Int, ...), Int):
+    (merged, gained) = merge(filter(line, |v: Int|: v != 0))
+    (pad(merged, line.Len()), gained)
+
+# equal neighbours merge once, left to right
+def merge(tiles: (Int, ...)):
+    match tiles:
+        case ():
+            ((), 0)
+        case (a,):
+            ((a,), 0)
+        case (a, b, ...rest):
+            if a == b:
+                (r, g) = merge(rest)
+                ((a * 2,) + r, a * 2 + g)
+            else:
+                (r, g) = merge((b,) + rest)
+                ((a,) + r, g)
+
+def pad(line: (Int, ...), n: Int) -> (Int, ...):
+    line + map(range(n - line.Len()), |i: Int|: 0)
+
+# ==================================================================
+# View (ANSI 256-colour backgrounds)
+# ==================================================================
+ESC = 27.Chr()
+# Redraw in place instead of clearing the screen (less flicker): home
+# the cursor, end each line with "erase to end of line", and erase
+# whatever is left below at the end.
+NL = ESC + "[K\n"
+CELL = 7
+#      ·    2    4    8   16   32   64  128  256  512  1k   2k  4k+
+BG = (237, 255, 230, 216, 209, 203, 196, 228, 227, 226, 220, 214, 93)
+FG = (241, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 255)
+
+def clear_screen():
+    print ESC, "[2J"
+
+def render(g: Game, raw: Bool) -> String:
+    title = ESC + "[1m  2 0 4 8" + ESC + "[0m  in Les"
+    stats: String = "score " + lpad(g.score.String(), 6) + "   best " + lpad(g.Best().String(), 5)
+    help = raw ? "  ←↑↓→ / w a s d / h j k l · u undo · n new · q quit" : \
+                 "  w/a/s/d (or k/h/j/l) + Enter · u undo · n new · q quit"
+    ESC + "[H" + NL + \
+    title + "      " + stats + NL + NL + \
+    join(map(g.board, draw_row)) + \
+    "  " + g.msg + NL + \
+    help + NL + \
+    (raw ? "" : "> ") + ESC + "[J"
+
+def farewell(g: Game) -> String:
+    "\nFinal score: " + g.score.String() + "   best tile: " + g.Best().String() + "\n"
+
+# each tile is three text lines tall, with the number in the middle one
+def draw_row(row: (Int, ...)) -> String:
+    tile_line(row, false) + tile_line(row, true) + tile_line(row, false) + NL
+
+def tile_line(row: (Int, ...), middle: Bool) -> String:
+    "  " + join(map(row, |v: Int|: tile(v, middle) + " ")) + NL
+
+def tile(v: Int, middle: Bool) -> String:
+    label = v == 0 ? "·" : v.String()
+    paint(v, middle ? center(label, CELL) : spaces(CELL))
+
+def paint(v: Int, text: String) -> String:
+    c: Int = min(log2(v), BG.Len() - 1)
+    ESC + "[48;5;" + BG[c].String() + ";38;5;" + FG[c].String() + ";1m" + text + ESC + "[0m"
+
+def log2(v: Int) -> Int:
+    v <= 1 ? 0 : 1 + log2(v / 2)
+
+def center(s: String, w: Int) -> String:
+    left = (w - s.Len()) / 2
+    spaces(left) + s + spaces(w - s.Len() - left)
+
+def lpad(s: String, w: Int) -> String:
+    spaces(w - s.Len()) + s
+
+def spaces(n: Int) -> String:
+    join(map(range(n), |i: Int|: " "))
+
+# ==================================================================
+# Input
+# ==================================================================
+# command line: [seed] [--raw], in any order
+def parse_args(args: (String, ...)) -> (rand::Source, Bool):
+    raw: Bool = any(args, |a: String|: a == "--raw")
+    words: (String, ...) = filter(args, |a: String|: a != "--raw")
+    src: rand::Source = words.Len() > 0 ? rand::Seed(words[0]) : rand::Seed()
+    (src, raw)
+
+# one line of keys; end of input counts as "q"
+def read_keys() -> String:
+    or_default(gets(), "q")
+
+# single keystroke from raw TTY, decoding arrow ESC sequences and Ctrl-C/Ctrl-D
+def read_key_raw() -> String:
+    for:
+        if signal::Poll()! is signal::Signal:
+            return "q"
+        b = term::ReadByte(-1)!
+        match b:
+            case Int:
+                if b == 3 || b == 4:
+                    return "q"
+                if b == 27:
+                    decoded: String = decode_esc()
+                    if decoded != "":
+                        return decoded
+                else:
+                    if (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122):
+                        return b.Chr()
+            case _:
+                return "q"
+
+def decode_esc() -> String:
+    b2 = term::ReadByte(50)!
+    match b2:
+        case Int:
+            if b2 == 91 || b2 == 79:
+                final: Int | Nil | Error = read_csi_final()
+                match final:
+                    case Int:
+                        final == 65 ? "w" : (final == 66 ? "s" : (final == 67 ? "d" : (final == 68 ? "a" : "")))
+                    case _:
+                        ""
+            else:
+                ""
+        case _:
+            ""
+
+def read_csi_final() -> Int | Nil | Error:
+    for:
+        c = term::ReadByte(50)!
+        match c:
+            case Int:
+                if (c >= 48 && c <= 57) || c == 59:
+                    continue
+                return c
+            case _:
+                return c
+
+def or_default(s: String | Nil, default: String) -> String:
+    match s:
+        case String:
+            s
+        case _:
+            default
+
+# ==================================================================
+# Tuples — Les has no collection library yet, so here is a tiny one.
+# These are the only loops in the program.
+# ==================================================================
+def range(n: Int) -> (Int, ...):
+    out: (Int, ...) = ()
+    i = 0
+    for i < n:
+        out = out << i
+        i = i + 1
+    out
+
+def map[T, U](t: (T, ...), f: (T) -> U) -> (U, ...):
+    out: (U, ...) = ()
+    i = 0
+    for i < t.Len():
+        out = out << f(t[i])
+        i = i + 1
+    out
+
+def filter[T](t: (T, ...), keep: (T) -> Bool) -> (T, ...):
+    out: (T, ...) = ()
+    i = 0
+    for i < t.Len():
+        if keep(t[i]):
+            out = out << t[i]
+        i = i + 1
+    out
+
+def fold[T, A](t: (T, ...), acc: A, f: (A, T) -> A) -> A:
+    i = 0
+    for i < t.Len():
+        acc = f(acc, t[i])
+        i = i + 1
+    acc
+
+def any[T](t: (T, ...), pred: (T) -> Bool) -> Bool:
+    i = 0
+    for i < t.Len():
+        if pred(t[i]):
+            return true
+        i = i + 1
+    false
+
+def reverse[T](t: (T, ...)) -> (T, ...):
+    map(range(t.Len()), |i: Int|: t[t.Len() - 1 - i])
+
+def transpose(rows: ((Int, ...), ...)) -> ((Int, ...), ...):
+    map(range(rows[0].Len()), |c: Int|: map(rows, |row: (Int, ...)|: row[c]))
+
+def replace[T](t: (T, ...), i: Int, v: T) -> (T, ...):
+    t.Slice(0, i) + (v,) + t.Slice(i + 1)
+
+def join(parts: (String, ...)) -> String:
+    fold(parts, "", |acc: String, s: String|: acc + s)
+
+def max(a: Int, b: Int) -> Int:
+    a > b ? a : b
+
+def min(a: Int, b: Int) -> Int:
+    a < b ? a : b
+
+main()
