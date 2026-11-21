@@ -315,6 +315,20 @@ func (m *MatchExpr) node()         {}
 func (m *MatchExpr) expr()         {}
 func (m *MatchExpr) Pos() Position { return m.Position }
 
+// ElseExpr represents an error-handling expression: Left else [|Binder|][:] Body.
+type ElseExpr struct {
+	Position        Position
+	Left            Expr
+	Binder          string // optional identifier bound to the Error value (from |Binder|), empty if omitted
+	Body            []Stmt // inline fallback expression/jump stmt or block body
+	IsBlock         bool   // true when parsed as an indented block (multiline or +;...;;)
+	WrappedInParens bool   // true when enclosed in (...) so outer stmts treat ')' as end
+}
+
+func (e *ElseExpr) node()         {}
+func (e *ElseExpr) expr()         {}
+func (e *ElseExpr) Pos() Position { return e.Position }
+
 // CallExpr represents function call. Arg is always a TupleLit expression (or single expr desugared).
 type CallExpr struct {
 	Position        Position

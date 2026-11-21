@@ -1224,6 +1224,22 @@ func (inf *Inferencer) inferBlock(stmts []ast.Stmt) (fallthroughTypes []Type, ca
 				}
 				continue
 			}
+			if ee, isElse := s.Value.(*ast.ElseExpr); isElse {
+				eet, elseCanFT, err := inf.inferElseExpr(ee)
+				if err != nil {
+					return nil, false, err
+				}
+				if inf.ExprTypes != nil {
+					inf.ExprTypes[ee] = eet
+				}
+				if !elseCanFT {
+					canFallthrough = false
+					currentValTypes = nil
+				} else if canFallthrough {
+					currentValTypes = []Type{eet}
+				}
+				continue
+			}
 
 			et, err := inf.inferExpr(s.Value)
 			if err != nil {
@@ -1328,8 +1344,13 @@ func (inf *Inferencer) inferBlock(stmts []ast.Stmt) (fallthroughTypes []Type, ca
 			}
 
 		default:
-			if err := inf.inferStmt(stmt); err != nil {
+			stmtCanFT, err := inf.inferStmtWithFallthrough(stmt)
+			if err != nil {
 				return nil, false, err
+			}
+			if !stmtCanFT {
+				canFallthrough = false
+				currentValTypes = nil
 			}
 			// Declarations, assignments, imports, etc. do not update lastVal in evalBlock
 		}
@@ -1481,51 +1502,82 @@ func (inf *Inferencer) InferProgram(prog *ast.Program) error {
 }
 
 func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
+	_, err := inf.inferStmtWithFallthrough(stmt)
+	return err
+}
+
+func (inf *Inferencer) inferExprWithFallthrough(expr ast.Expr) (Type, bool, error) {
+	switch e := expr.(type) {
+	case *ast.MatchExpr:
+		t, canFT, err := inf.inferMatchExpr(e)
+		if err == nil && inf.ExprTypes != nil {
+			inf.ExprTypes[e] = t
+		}
+		return t, canFT, err
+	case *ast.ElseExpr:
+		t, canFT, err := inf.inferElseExpr(e)
+		if err == nil && inf.ExprTypes != nil {
+			inf.ExprTypes[e] = t
+		}
+		return t, canFT, err
+	default:
+		t, err := inf.inferExpr(expr)
+		if err != nil {
+			return nil, false, err
+		}
+		return t, !isExitCall(expr), nil
+	}
+}
+
+func (inf *Inferencer) inferStmtWithFallthrough(stmt ast.Stmt) (bool, error) {
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
-		valType, err := inf.inferExpr(s.Value)
+		valType, valCanFT, err := inf.inferExprWithFallthrough(s.Value)
 		if err != nil {
-			return err
+			return false, err
 		}
 		targetType := valType
 		if s.TypeAnnot != "" {
 			expected, err := inf.parseTypeAnnot(s.TypeAnnot)
 			if err != nil {
-				return err
+				return false, err
 			}
-			if !IsAssignableTo(valType, expected) {
-				return inf.nodeErr(s, "type mismatch for variable '%s': expected %s, got %s", s.Name, qual(expected, valType), qual(valType, expected))
+			if valCanFT && !IsAssignableTo(valType, expected) {
+				return false, inf.nodeErr(s, "type mismatch for variable '%s': expected %s, got %s", s.Name, qual(expected, valType), qual(valType, expected))
 			}
 			targetType = expected
-		} else if targetType == TypeUnknown && !isEmptyCollection(s.Value) {
+		} else if valCanFT && targetType == TypeUnknown && !isEmptyCollection(s.Value) {
 			inf.addWarning(s.Pos(), "Unknown type of variable '%s'", s.Name)
 		}
 		// Enforce same-scope duplicate declaration prohibition
 		if err := inf.scope.Declare(s.Name, targetType); err != nil {
-			return inf.nodeErr(s, "%s", err.Error())
+			return false, inf.nodeErr(s, "%s", err.Error())
 		}
-		return nil
+		return valCanFT, nil
 
 	case *ast.UnpackDecl:
-		valT, err := inf.inferExpr(s.Value)
+		valT, valCanFT, err := inf.inferExprWithFallthrough(s.Value)
 		if err != nil {
-			return err
+			return false, err
+		}
+		if !valCanFT {
+			valT = TypeUnknown
 		}
 		if valT != TypeUnknown && !TypesCanOverlap(valT, &TupleType{IsVariadic: true}) {
-			return inf.nodeErr(s, "cannot unpack non-tuple type %s", valT.String())
+			return false, inf.nodeErr(s, "cannot unpack non-tuple type %s", valT.String())
 		}
 		if tup, ok := valT.(*TupleType); ok {
 			reqCount := len(s.Pattern.Elements)
 			if s.Pattern.RestName != "" {
 				if !tup.IsVariadic && len(tup.Elems) < reqCount {
-					return inf.nodeErr(s, "not enough elements to unpack into tuple pattern: got %d, need at least %d", len(tup.Elems), reqCount)
+					return false, inf.nodeErr(s, "not enough elements to unpack into tuple pattern: got %d, need at least %d", len(tup.Elems), reqCount)
 				}
 			} else {
 				if tup.IsVariadic {
-					return inf.nodeErr(s, "cannot unpack infinite tuple into fixed-length pattern")
+					return false, inf.nodeErr(s, "cannot unpack infinite tuple into fixed-length pattern")
 				}
 				if len(tup.Elems) != reqCount {
-					return inf.nodeErr(s, "element count mismatch in unpack: expected %d, got %d", reqCount, len(tup.Elems))
+					return false, inf.nodeErr(s, "element count mismatch in unpack: expected %d, got %d", reqCount, len(tup.Elems))
 				}
 			}
 		}
@@ -1534,25 +1586,32 @@ func (inf *Inferencer) inferStmt(stmt ast.Stmt) error {
 		for i, name := range s.Pattern.Elements {
 			if name != "_" {
 				if seenNames[name] {
-					return inf.nodeErr(s, "duplicate variable %s in unpack pattern", name)
+					return false, inf.nodeErr(s, "duplicate variable %s in unpack pattern", name)
 				}
 				seenNames[name] = true
 				if err := inf.scope.Declare(name, elemTypes[i]); err != nil {
-					return inf.nodeErr(s, "%s", err.Error())
+					return false, inf.nodeErr(s, "%s", err.Error())
 				}
 			}
 		}
 		if s.Pattern.RestName != "" && s.Pattern.RestName != "_" {
 			if seenNames[s.Pattern.RestName] {
-				return inf.nodeErr(s, "duplicate variable %s in unpack pattern", s.Pattern.RestName)
+				return false, inf.nodeErr(s, "duplicate variable %s in unpack pattern", s.Pattern.RestName)
 			}
 			seenNames[s.Pattern.RestName] = true
 			if err := inf.scope.Declare(s.Pattern.RestName, restType); err != nil {
-				return inf.nodeErr(s, "%s", err.Error())
+				return false, inf.nodeErr(s, "%s", err.Error())
 			}
 		}
-		return nil
+		return valCanFT, nil
 
+	default:
+		return true, inf.inferOtherStmt(stmt)
+	}
+}
+
+func (inf *Inferencer) inferOtherStmt(stmt ast.Stmt) error {
+	switch s := stmt.(type) {
 	case *ast.FuncDef:
 		var origScope *Scope
 		var typeParamDefs []TypeParamDef
@@ -4260,6 +4319,9 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 	case *ast.MatchExpr:
 		t, _, err := inf.inferMatchExpr(e)
 		return t, err
+	case *ast.ElseExpr:
+		t, _, err := inf.inferElseExpr(e)
+		return t, err
 
 	case *ast.LambdaExpr:
 		paramTypes := make([]Type, len(e.Params))
@@ -5484,6 +5546,115 @@ func (inf *Inferencer) inferMatchExpr(e *ast.MatchExpr) (Type, bool, error) {
 		caseTypes = append(caseTypes, emptyTuple)
 	}
 	return NewUnionType(caseTypes...), true, nil
+}
+
+func isStaticErrorType(t Type) bool {
+	return t != nil && t != TypeUnknown && ImplementsInterface(t, BuiltinErrorIface)
+}
+
+func removeErrorMembers(t Type) (Type, bool) {
+	if t == nil || t == TypeUnknown {
+		return TypeUnknown, true
+	}
+	if u, ok := t.(*UnionType); ok {
+		var kept []Type
+		for _, m := range u.Members {
+			if !isStaticErrorType(m) {
+				kept = append(kept, m)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, false
+		}
+		return NewUnionType(kept...), true
+	}
+	if isStaticErrorType(t) {
+		return nil, false
+	}
+	return t, true
+}
+
+func canValueSatisfyError(t Type) bool {
+	if t == nil || t == TypeUnknown {
+		return true
+	}
+	switch typ := t.(type) {
+	case *TypeParamType, *SelfType, *InterfaceType:
+		return true
+	case *UnionType:
+		for _, m := range typ.Members {
+			if canValueSatisfyError(m) {
+				return true
+			}
+		}
+		return false
+	case *StructType:
+		return ImplementsInterface(typ, BuiltinErrorIface)
+	default:
+		return false
+	}
+}
+
+func narrowElseErrorType(lhsT Type) Type {
+	if lhsT == nil || lhsT == TypeUnknown {
+		return BuiltinErrorIface
+	}
+	narrowed := narrowTypeByPattern(lhsT, BuiltinErrorIface)
+	if narrowed == nil || narrowed == TypeUnknown {
+		return BuiltinErrorIface
+	}
+	if _, isUnion := narrowed.(*UnionType); isUnion {
+		// UnionType does not support direct member calls like err.Message(),
+		// so widen multiple error variants to Error.
+		return BuiltinErrorIface
+	}
+	if !isStaticErrorType(narrowed) {
+		return BuiltinErrorIface
+	}
+	return narrowed
+}
+
+func (inf *Inferencer) inferElseExpr(e *ast.ElseExpr) (Type, bool, error) {
+	lhsT, err := inf.inferExpr(e.Left)
+	if err != nil {
+		return nil, false, err
+	}
+	if !canValueSatisfyError(lhsT) {
+		return nil, false, inf.nodeErr(e, "else handler requires Error-capable type, got %s", lhsT.String())
+	}
+
+	successT, hasSuccess := removeErrorMembers(lhsT)
+
+	elseScope := NewScope(inf.scope)
+	if e.Binder != "" && e.Binder != "_" {
+		if err := elseScope.Declare(e.Binder, narrowElseErrorType(lhsT)); err != nil {
+			return nil, false, inf.nodeErr(e, "%s", err.Error())
+		}
+	}
+
+	prevScope := inf.scope
+	inf.scope = elseScope
+	ftTypes, handlerCanFT, err := inf.inferBlock(e.Body)
+	inf.scope = prevScope
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !hasSuccess && !handlerCanFT {
+		return TypeUnknown, false, nil
+	}
+
+	var outTypes []Type
+	if hasSuccess {
+		outTypes = append(outTypes, successT)
+	}
+	if handlerCanFT {
+		outTypes = append(outTypes, ftTypes...)
+	}
+	if len(outTypes) == 0 {
+		return &TupleType{Elems: []Type{}}, true, nil
+	}
+	return NewUnionType(outTypes...), true, nil
 }
 
 func getFirstParamType(fnT *FuncType) (Type, bool) {

@@ -159,6 +159,9 @@ func (c *nameCollector) expr(expr ast.Expr) {
 		for _, mc := range e.Cases {
 			c.stmts(mc.Body)
 		}
+	case *ast.ElseExpr:
+		c.expr(e.Left)
+		c.stmts(e.Body)
 	case *ast.CallExpr:
 		c.expr(e.Callee)
 		for _, a := range e.Args {
