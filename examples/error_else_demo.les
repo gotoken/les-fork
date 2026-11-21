@@ -1,0 +1,80 @@
+# Error-Only `else` Handler Demo in Les
+
+struct ParseError:
+    line: Int
+    detail: String
+
+    def Message():
+        "line " + line.String() + ": " + detail
+
+    def Inspect():
+        "ParseError(" + detail + ")"
+
+def parse_port(raw: String) -> Int | ParseError:
+    if raw == "8080":
+        8080
+    else:
+        if raw == "443":
+            443
+        else:
+            ParseError(line: 1, detail: "invalid port '" + raw + "'")
+
+# 1. Early return narrows `port` from `Int | ParseError` to `Int`
+def load_endpoint(host: String, port_str: String) -> String | Error:
+    port: Int = parse_port(port_str) else |err|: return err
+    host + ":" + port.String()
+
+# 2. Multi-line `else |err|:` block adds context before returning
+def load_endpoint_with_context(host: String, port_str: String) -> String | Error:
+    port = parse_port(port_str) else |err|:
+        msg = "config line " + err.line.String() + " failed (" + err.Message() + ")"
+        return Error(msg)
+    host + ":" + port.String()
+
+# 3. Inline fallback values & right-associative chaining
+port_or_default = parse_port("bad") else 3000
+chained_port = parse_port("bad") else parse_port("443") else 80
+
+print "endpoint ok:", load_endpoint("localhost", "8080") else |e|: e.Message(), "\n"
+print "endpoint err:", load_endpoint("localhost", "bad") else |e|: e.Message(), "\n"
+print "wrapped err:", load_endpoint_with_context("localhost", "bad") else |e|: e.Message(), "\n"
+print "default port:", port_or_default, "\n"
+print "chained port:", chained_port, "\n"
+
+# 4. `else` only catches `Error`, leaving `Nil` untouched
+def lookup_env(name: String) -> String | Nil | Error:
+    if name == "FAIL":
+        Error("env read error")
+    else:
+        if name == "MISSING":
+            nil
+        else:
+            "prod"
+
+def describe_env(name: String) -> String | Error:
+    val: String | Nil = lookup_env(name) else |err|: return err
+    if val != nil:
+        "value=" + val
+    else:
+        "unset"
+
+print "env ok:", describe_env("MODE") else |e|: e.Message(), "\n"
+print "env nil:", describe_env("MISSING") else |e|: e.Message(), "\n"
+print "env err:", describe_env("FAIL") else |e|: e.Message(), "\n"
+
+# 5. Loop retry using `else continue`
+def connect_attempt(attempt: Int) -> String | Error:
+    if attempt < 3:
+        Error("temporary timeout")
+    else:
+        "connected on attempt " + attempt.String()
+
+def connect_with_retry() -> String | Error:
+    i: Int = 0
+    for i < 5:
+        i = i + 1
+        msg = connect_attempt(i) else continue
+        return msg
+    Error("all attempts failed")
+
+print "retry:", connect_with_retry() else |e|: e.Message(), "\n"
