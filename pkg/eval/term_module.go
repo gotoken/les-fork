@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -61,11 +62,14 @@ type termReadResult struct {
 // termByteReader serializes single-byte reads across one background goroutine
 // bound to a specific io.Reader so repeated timeouts do not leak goroutines.
 type termByteReader struct {
-	reader  io.Reader
-	reqCh   chan struct{}
-	resCh   chan termReadResult
-	pending bool
-	eof     bool
+	reader    io.Reader
+	reqCh     chan struct{}
+	resCh     chan termReadResult
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	closeOnce sync.Once
+	pending   bool
+	eof       bool
 }
 
 func newTermByteReader(r io.Reader) *termByteReader {
@@ -73,36 +77,68 @@ func newTermByteReader(r io.Reader) *termByteReader {
 		reader: r,
 		reqCh:  make(chan struct{}),
 		resCh:  make(chan termReadResult),
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 	go tr.loop()
 	return tr
 }
 
+func (tr *termByteReader) close() {
+	tr.closeOnce.Do(func() {
+		close(tr.stopCh)
+	})
+}
+
 func (tr *termByteReader) loop() {
+	defer close(tr.doneCh)
 	const maxEmptyReads = 100
 	var buf [1]byte
-	for range tr.reqCh {
+	for {
+		select {
+		case <-tr.stopCh:
+			return
+		case <-tr.reqCh:
+		}
 		emptyReads := 0
 		for {
 			n, err := tr.reader.Read(buf[:])
 			if n > 0 {
-				tr.resCh <- termReadResult{
+				res := termReadResult{
 					b:        buf[0],
 					hasByte:  true,
 					eofAfter: err == io.EOF,
 				}
+				select {
+				case tr.resCh <- res:
+				case <-tr.stopCh:
+					return
+				}
 				break
 			}
 			if err != nil {
-				tr.resCh <- termReadResult{err: err}
+				select {
+				case tr.resCh <- termReadResult{err: err}:
+				case <-tr.stopCh:
+					return
+				}
 				break
 			}
 			emptyReads++
 			if emptyReads >= maxEmptyReads {
-				tr.resCh <- termReadResult{err: io.ErrNoProgress}
+				select {
+				case tr.resCh <- termReadResult{err: io.ErrNoProgress}:
+				case <-tr.stopCh:
+					return
+				}
 				break
 			}
-			runtime.Gosched()
+			select {
+			case <-tr.stopCh:
+				return
+			default:
+				runtime.Gosched()
+			}
 		}
 	}
 }
@@ -112,11 +148,13 @@ func (tr *termByteReader) handleResult(res termReadResult) (byte, bool, bool, er
 	if res.hasByte {
 		if res.eofAfter {
 			tr.eof = true
+			tr.close()
 		}
 		return res.b, false, false, nil
 	}
 	if res.err == io.EOF {
 		tr.eof = true
+		tr.close()
 		return 0, false, true, nil
 	}
 	if res.err != nil {
@@ -133,8 +171,12 @@ func (tr *termByteReader) readByte(timeoutMs int64) (byte, bool, bool, error) {
 		return 0, false, false, fmt.Errorf("timeout duration overflow: %d ms", timeoutMs)
 	}
 	if !tr.pending {
-		tr.reqCh <- struct{}{}
-		tr.pending = true
+		select {
+		case tr.reqCh <- struct{}{}:
+			tr.pending = true
+		case <-tr.stopCh:
+			return 0, false, true, nil
+		}
 	}
 	if timeoutMs < 0 {
 		res := <-tr.resCh
@@ -561,9 +603,15 @@ func (ev *Evaluator) initTermModule() {
 
 			rawIn := ev.globalEnv.GetRawStdin()
 			if ev.termReader == nil || ev.termReader.reader != rawIn {
-				ev.termReader = newTermByteReader(rawIn)
+				if ev.termReader != nil {
+					ev.termReader.close()
+				}
+				tr := newTermByteReader(rawIn)
+				runtime.AddCleanup(ev, func(r *termByteReader) { r.close() }, tr)
+				ev.termReader = tr
 			}
 			b, timedOut, eof, err := ev.termReader.readByte(timeoutMs)
+			runtime.KeepAlive(ev)
 			if err != nil {
 				return ev.newErrorValue(err.Error()), nil
 			}

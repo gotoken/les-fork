@@ -103,7 +103,10 @@ func (ev *Evaluator) SetErrorOutput(w io.Writer) {
 
 func (ev *Evaluator) SetInput(r io.Reader) {
 	ev.builtinsEnv.RawStdin = r
-	ev.termReader = nil
+	if ev.termReader != nil {
+		ev.termReader.close()
+		ev.termReader = nil
+	}
 	if r != nil {
 		ev.builtinsEnv.StdinReader = bufio.NewReader(r)
 	} else {

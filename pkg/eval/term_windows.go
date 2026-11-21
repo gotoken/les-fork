@@ -28,11 +28,12 @@ func (defaultTermBackend) makeRaw(inFd, outFd int) (*termRawState, error) {
 	outHandle := windows.Handle(outFd)
 	var outMode uint32
 	if err := windows.GetConsoleMode(outHandle, &outMode); err == nil {
-		rs.hasOutMode = true
-		rs.outFd = outFd
-		rs.outMode = outMode
 		if outMode&windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0 {
-			_ = windows.SetConsoleMode(outHandle, outMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+			if err := windows.SetConsoleMode(outHandle, outMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING); err == nil {
+				rs.hasOutMode = true
+				rs.outFd = outFd
+				rs.outMode = outMode
+			}
 		}
 	}
 	return rs, nil

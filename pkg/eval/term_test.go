@@ -505,4 +505,46 @@ if term::IsTerminal():
 			t.Fatalf("got %q, want %q", out, want)
 		}
 	})
+
+	t.Run("termByteReader exits goroutine on EOF and SetInput swap", func(t *testing.T) {
+		code := `
+import term
+a = term::ReadByte()!
+e = term::ReadByte()!
+print a, "|", e == nil
+`
+		out, ev, err := evalTermScript(t, code, nil, strings.NewReader("x"))
+		if err != nil || out != "120|true" {
+			t.Fatalf("got (%q, %v), want (\"120|true\", nil)", out, err)
+		}
+		if ev.termReader == nil {
+			t.Fatalf("expected termReader created")
+		}
+		select {
+		case <-ev.termReader.doneCh:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("expected reader goroutine to exit on EOF")
+		}
+
+		// Now test SetInput swap on an idle (non-EOF) reader closes the old goroutine.
+		codeSingle := `
+import term
+a = term::ReadByte()!
+print a
+`
+		out2, ev2, err := evalTermScript(t, codeSingle, nil, strings.NewReader("xy"))
+		if err != nil || out2 != "120" {
+			t.Fatalf("got (%q, %v), want (\"120\", nil)", out2, err)
+		}
+		oldReader := ev2.termReader
+		if oldReader == nil {
+			t.Fatalf("expected non-nil termReader")
+		}
+		ev2.SetInput(strings.NewReader("z"))
+		select {
+		case <-oldReader.doneCh:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("expected old idle reader goroutine to exit on SetInput swap")
+		}
+	})
 }
