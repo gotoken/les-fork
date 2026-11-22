@@ -40,25 +40,25 @@ const (
 	TokenForce
 
 	// Punctuation
-	TokenAssign      // =
-	TokenColon       // :
-	TokenColonColon  // ::
-	TokenSemicolon   // ;
-	TokenComma       // ,
-	TokenDot         // .
+	TokenAssign           // =
+	TokenColon            // :
+	TokenColonColon       // ::
+	TokenSemicolon        // ;
+	TokenComma            // ,
+	TokenDot              // .
 	TokenAt               // @
 	TokenQuestion         // ?
 	TokenQuestionDot      // ?.
 	TokenQuestionQuestion // ??
 	TokenPipe             // |
-	TokenPipeGreater // |>
-	TokenArrow       // ->
-	TokenLParen      // (
-	TokenRParen      // )
-	TokenLBracket    // [
-	TokenRBracket    // ]
-	TokenLBrace      // {
-	TokenRBrace      // }
+	TokenPipeGreater      // |>
+	TokenArrow            // ->
+	TokenLParen           // (
+	TokenRParen           // )
+	TokenLBracket         // [
+	TokenRBracket         // ]
+	TokenLBrace           // {
+	TokenRBrace           // }
 
 	// Operators
 	TokenPlus       // +

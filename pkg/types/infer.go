@@ -524,14 +524,14 @@ type Inferencer struct {
 	SkipFieldScope map[ast.Expr]bool
 	// TypeAppExprs marks IndexExpr callees that represent explicit generic
 	// type application rather than value indexing.
-	TypeAppExprs map[*ast.IndexExpr]bool
+	TypeAppExprs  map[*ast.IndexExpr]bool
 	filename      string
 	warnUnknown   bool
 	warnRedundant bool
 	warnings      []TypeWarning
-	funcCtx      *funcReturnCtx
-	breakCtx     *breakTargetCtx
-	selfType     Type
+	funcCtx       *funcReturnCtx
+	breakCtx      *breakTargetCtx
+	selfType      Type
 
 	// declModule and declModuleName identify the module being inferred; they
 	// are copied to every struct it declares. Both are empty for the main
@@ -821,9 +821,9 @@ func NewInferencer() *Inferencer {
 	fileScope := NewScope(rootScope)
 
 	inf := &Inferencer{
-		nextVarID:    0,
-		scope:        fileScope,
-		modules:      make(map[string]*ModuleType),
+		nextVarID:      0,
+		scope:          fileScope,
+		modules:        make(map[string]*ModuleType),
 		ExprTypes:      make(map[ast.Expr]Type),
 		StmtTypes:      make(map[ast.Stmt]Type),
 		CallTypeArgs:   make(map[ast.Expr][]Type),
