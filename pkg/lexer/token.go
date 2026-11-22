@@ -46,9 +46,11 @@ const (
 	TokenSemicolon   // ;
 	TokenComma       // ,
 	TokenDot         // .
-	TokenAt          // @
-	TokenQuestion    // ?
-	TokenPipe        // |
+	TokenAt               // @
+	TokenQuestion         // ?
+	TokenQuestionDot      // ?.
+	TokenQuestionQuestion // ??
+	TokenPipe             // |
 	TokenPipeGreater // |>
 	TokenArrow       // ->
 	TokenLParen      // (
@@ -163,6 +165,10 @@ func (t TokenType) String() string {
 		return "'@'"
 	case TokenQuestion:
 		return "'?'"
+	case TokenQuestionDot:
+		return "'?.'"
+	case TokenQuestionQuestion:
+		return "'??'"
 	case TokenPipe:
 		return "'|'"
 	case TokenPipeGreater:

@@ -525,9 +525,10 @@ type Inferencer struct {
 	// TypeAppExprs marks IndexExpr callees that represent explicit generic
 	// type application rather than value indexing.
 	TypeAppExprs map[*ast.IndexExpr]bool
-	filename     string
-	warnUnknown  bool
-	warnings     []TypeWarning
+	filename      string
+	warnUnknown   bool
+	warnRedundant bool
+	warnings      []TypeWarning
 	funcCtx      *funcReturnCtx
 	breakCtx     *breakTargetCtx
 	selfType     Type
@@ -828,7 +829,8 @@ func NewInferencer() *Inferencer {
 		CallTypeArgs:   make(map[ast.Expr][]Type),
 		SkipFieldScope: make(map[ast.Expr]bool),
 		TypeAppExprs:   make(map[*ast.IndexExpr]bool),
-		warnUnknown:  true,
+		warnUnknown:    true,
+		warnRedundant:  true,
 	}
 	for name, factory := range builtinModuleFactories {
 		inf.modules[name] = factory(name)
@@ -1039,6 +1041,10 @@ func (inf *Inferencer) SetWarnUnknown(warn bool) {
 	inf.warnUnknown = warn
 }
 
+func (inf *Inferencer) SetWarnRedundant(warn bool) {
+	inf.warnRedundant = warn
+}
+
 func (inf *Inferencer) Warnings() []TypeWarning {
 	return inf.warnings
 }
@@ -1052,6 +1058,17 @@ func (inf *Inferencer) addWarning(pos ast.Position, format string, args ...any) 
 		Filename: inf.filename,
 		Pos:      pos,
 		Message:  msg,
+	})
+}
+
+func (inf *Inferencer) addRedundantWarning(pos ast.Position, format string, args ...any) {
+	if !inf.warnRedundant {
+		return
+	}
+	inf.warnings = append(inf.warnings, TypeWarning{
+		Filename: inf.filename,
+		Pos:      pos,
+		Message:  fmt.Sprintf(format, args...),
 	})
 }
 
@@ -3553,640 +3570,23 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 			if err != nil {
 				return nil, err
 			}
-			effTargetT := targetT
-			if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
-				effTargetT = tp.Constraint
-			}
-			if targetTuple, ok := effTargetT.(*TupleType); ok {
-				switch mem.Member {
-				case "Append":
-					if len(e.Args) == 0 {
-						return nil, inf.nodeErr(e, "Append expects at least 1 argument, got 0")
-					}
-					var argT Type
-					if len(e.Args) == 1 {
-						var err error
-						argT, err = inf.inferExpr(e.Args[0])
-						if err != nil {
-							return nil, err
-						}
-					} else {
-						tupElems := make([]Type, len(e.Args))
-						for i, a := range e.Args {
-							t, err := inf.inferExpr(a)
-							if err != nil {
-								return nil, err
-							}
-							tupElems[i] = t
-						}
-						argT = &TupleType{Elems: tupElems}
-					}
-					return appendToTuple(targetTuple, []Type{argT}, false), nil
-				case "Prepend":
-					if len(e.Args) == 0 {
-						return nil, inf.nodeErr(e, "Prepend expects at least 1 argument, got 0")
-					}
-					var argT Type
-					if len(e.Args) == 1 {
-						var err error
-						argT, err = inf.inferExpr(e.Args[0])
-						if err != nil {
-							return nil, err
-						}
-					} else {
-						tupElems := make([]Type, len(e.Args))
-						for i, a := range e.Args {
-							t, err := inf.inferExpr(a)
-							if err != nil {
-								return nil, err
-							}
-							tupElems[i] = t
-						}
-						argT = &TupleType{Elems: tupElems}
-					}
-					newElems := append([]Type{argT}, targetTuple.Elems...)
-					return &TupleType{Elems: newElems, IsVariadic: targetTuple.IsVariadic}, nil
-				case "Concat":
-					if len(e.Args) < 1 {
-						return nil, inf.nodeErr(e, "Concat expects at least 1 argument, got 0")
-					}
-					curTuple := targetTuple
-					for i, arg := range e.Args {
-						argT, err := inf.inferExpr(arg)
-						if err != nil {
-							return nil, err
-						}
-						effArgT := argT
-						if tp, ok := argT.(*TypeParamType); ok && tp.Constraint != nil {
-							effArgT = tp.Constraint
-						}
-						if argTuple, ok := effArgT.(*TupleType); ok {
-							curTuple = appendToTuple(curTuple, argTuple.Elems, argTuple.IsVariadic)
-						} else if effArgT == TypeUnknown {
-							curTuple = appendToTuple(curTuple, []Type{TypeUnknown}, true)
-						} else {
-							return nil, inf.nodeErr(arg, "Concat argument %d must be a tuple, got %s", i+1, argT)
-						}
-					}
-					return curTuple, nil
-				case "Slice":
-					if len(e.Args) < 1 || len(e.Args) > 2 {
-						return nil, inf.nodeErr(e, "Slice expects 1 or 2 arguments, got %d", len(e.Args))
-					}
-					for _, arg := range e.Args {
-						argT, err := inf.inferExpr(arg)
-						if err != nil {
-							return nil, err
-						}
-						if argT != TypeInt && argT != TypeUnknown {
-							return nil, inf.nodeErr(arg, "Slice arguments must be Int, got %s", argT)
-						}
-					}
-					if len(e.Args) == 1 {
-						if intLit, ok := e.Args[0].(*ast.IntLit); ok && intLit.BigValue == nil && intLit.Value >= 0 && int(intLit.Value) <= len(targetTuple.Elems) && !targetTuple.IsVariadic {
-							return &TupleType{Elems: append([]Type(nil), targetTuple.Elems[int(intLit.Value):]...)}, nil
-						}
-					} else if len(e.Args) == 2 {
-						sLit, sOK := e.Args[0].(*ast.IntLit)
-						eLit, eOK := e.Args[1].(*ast.IntLit)
-						if sOK && eOK && sLit.BigValue == nil && eLit.BigValue == nil && sLit.Value >= 0 && eLit.Value >= sLit.Value && int(eLit.Value) <= len(targetTuple.Elems) && !targetTuple.IsVariadic {
-							return &TupleType{Elems: append([]Type(nil), targetTuple.Elems[int(sLit.Value):int(eLit.Value)]...)}, nil
-						}
-					}
-					var elemUnion []Type
-					for _, el := range targetTuple.Elems {
-						elemUnion = append(elemUnion, el)
-					}
-					var retElem Type = TypeUnknown
-					if len(elemUnion) > 0 {
-						retElem = NewUnionType(elemUnion...)
-					}
-					return &TupleType{Elems: []Type{retElem}, IsVariadic: true}, nil
-				}
+			if retT, handled, err := inf.inferTupleMethodCall(e, targetT, mem.Member, e.Args); err != nil {
+				return nil, err
+			} else if handled {
+				return retT, nil
 			}
 		}
 		calleeT, err := inf.inferCallee(e.Callee)
 		if err != nil {
 			return nil, err
 		}
-		effCalleeT := calleeT
-		if tp, ok := calleeT.(*TypeParamType); ok && tp.Constraint != nil {
-			effCalleeT = tp.Constraint
-		}
-		if st, ok := effCalleeT.(*StructType); ok {
-			if len(st.TypeParams) > 0 && len(st.TypeArgs) == 0 {
-				bindings := make(map[string]Type)
-				argStartIdx := 0
-				if len(e.Args) >= 2 {
-					if _, isNamed := e.Args[0].(*ast.NamedArgExpr); !isNamed {
-						if firstT, err := inf.inferExpr(e.Args[0]); err == nil {
-							if firstSt, ok := firstT.(*StructType); ok && sameStructDecl(firstSt, st) && len(firstSt.TypeArgs) == len(st.TypeParams) {
-								hasNamedInRest := false
-								for _, a := range e.Args[1:] {
-									if _, ok := a.(*ast.NamedArgExpr); ok {
-										hasNamedInRest = true
-										break
-									}
-								}
-								isCopy := hasNamedInRest
-								if !isCopy {
-									var firstExpectedT Type
-									maxPositional := 0
-									if initFn, hasInit := st.Methods["init"]; hasInit {
-										maxPositional = initFn.MaxArity
-										if tup, ok := initFn.Arg.(*TupleType); ok && len(tup.Elems) > 0 {
-											firstExpectedT = tup.Elems[0]
-										}
-									} else {
-										maxPositional = len(st.FieldOrder)
-										if len(st.FieldOrder) > 0 {
-											firstExpectedT = st.Fields[st.FieldOrder[0]]
-										}
-									}
-									if maxPositional >= 0 && len(e.Args) > maxPositional {
-										isCopy = true
-									} else if firstExpectedT != nil && firstExpectedT != TypeUnknown {
-										testBindings := make(map[string]Type)
-										unifyTypeParams(firstExpectedT, firstT, testBindings)
-										subExpected := Substitute(firstExpectedT, testBindings)
-										if !IsAssignableTo(firstT, subExpected) {
-											isCopy = true
-										} else {
-											for _, tp := range st.TypeParams {
-												if bound, hasB := testBindings[tp.Name]; hasB && tp.Constraint != nil {
-													subC := Substitute(tp.Constraint, testBindings)
-													if !IsAssignableTo(bound, subC) {
-														isCopy = true
-														break
-													}
-												}
-											}
-										}
-									}
-								}
-								if isCopy {
-									for i, tp := range st.TypeParams {
-										bindings[tp.Name] = firstSt.TypeArgs[i]
-									}
-									argStartIdx = 1
-								}
-							}
-						}
-					}
-				}
-				var initTuple *TupleType
-				if initFn, hasInit := st.Methods["init"]; hasInit {
-					if tup, ok := initFn.Arg.(*TupleType); ok {
-						initTuple = tup
-					}
-				}
-				posIdx := 0
-				for i := argStartIdx; i < len(e.Args); i++ {
-					arg := e.Args[i]
-					if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
-						if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
-							valT, err := inf.inferExpr(named.Value)
-							if err == nil {
-								unifyTypeParams(expectedFieldT, valT, bindings)
-							}
-						}
-					} else {
-						var expectedParamT Type
-						if initTuple != nil {
-							if posIdx < len(initTuple.Elems) {
-								expectedParamT = initTuple.Elems[posIdx]
-							}
-						} else if posIdx < len(st.FieldOrder) {
-							fName := st.FieldOrder[posIdx]
-							expectedParamT = st.Fields[fName]
-						}
-						if expectedParamT != nil {
-							valT, err := inf.inferExpr(arg)
-							if err == nil {
-								unifyTypeParams(expectedParamT, valT, bindings)
-							}
-						}
-						posIdx++
-					}
-				}
-				typeArgs := make([]Type, len(st.TypeParams))
-				for i, tp := range st.TypeParams {
-					if bound, ok := bindings[tp.Name]; ok {
-						typeArgs[i] = bound
-					} else if tp.Default != nil {
-						typeArgs[i] = Substitute(tp.Default, bindings)
-						bindings[tp.Name] = typeArgs[i]
-					} else {
-						typeArgs[i] = TypeUnknown
-					}
-				}
-				if err := ValidateTypeConstraints(st.TypeParams, typeArgs); err != nil {
-					return nil, inf.nodeErr(e, "%s", err.Error())
-				}
-				st = InstantiateStruct(st, typeArgs)
-				calleeT = st
-			}
-			isCopyUpdate := false
-			if len(e.Args) >= 2 {
-				if _, isNamed := e.Args[0].(*ast.NamedArgExpr); !isNamed {
-					if firstT, err := inf.inferExpr(e.Args[0]); err == nil && firstT.Equals(st) {
-						hasNamedInRest := false
-						for _, a := range e.Args[1:] {
-							if _, ok := a.(*ast.NamedArgExpr); ok {
-								hasNamedInRest = true
-								break
-							}
-						}
-						if hasNamedInRest {
-							isCopyUpdate = true
-						} else {
-							var firstExpectedT Type
-							maxPositional := 0
-							if initFn, hasInit := st.Methods["init"]; hasInit {
-								maxPositional = initFn.MaxArity
-								if tup, ok := initFn.Arg.(*TupleType); ok && len(tup.Elems) > 0 {
-									firstExpectedT = tup.Elems[0]
-								}
-							} else {
-								maxPositional = len(st.FieldOrder)
-								if len(st.FieldOrder) > 0 {
-									firstExpectedT = st.Fields[st.FieldOrder[0]]
-								}
-							}
-							if maxPositional >= 0 && len(e.Args) > maxPositional {
-								isCopyUpdate = true
-							} else if firstExpectedT != nil && firstExpectedT != TypeUnknown && !IsAssignableTo(firstT, firstExpectedT) {
-								isCopyUpdate = true
-							}
-						}
-					}
-				}
-			}
-			if isCopyUpdate {
-				posIdx := 0
-				for i := 1; i < len(e.Args); i++ {
-					arg := e.Args[i]
-					if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
-						if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
-							valT, err := inf.inferExpr(named.Value)
-							if err != nil {
-								return nil, err
-							}
-							if !IsAssignableTo(valT, expectedFieldT) {
-								return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
-							}
-						} else {
-							return nil, inf.nodeErr(named, "unknown field '%s' in struct '%s'", named.Name, st.Name)
-						}
-					} else {
-						if posIdx < len(st.FieldOrder) {
-							fName := st.FieldOrder[posIdx]
-							expectedFieldT := st.Fields[fName]
-							valT, err := inf.inferExpr(arg)
-							if err != nil {
-								return nil, err
-							}
-							if !IsAssignableTo(valT, expectedFieldT) {
-								return nil, inf.nodeErr(arg, "type mismatch for field '%s' in struct '%s': expected %s, got %s", fName, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
-							}
-							posIdx++
-						} else {
-							return nil, inf.nodeErr(arg, "too many arguments for struct '%s' update", st.Name)
-						}
-					}
-				}
-			} else {
-				if initFn, hasInit := st.Methods["init"]; hasInit {
-					if argTuple, ok := initFn.Arg.(*TupleType); ok {
-						var posArgs []ast.Expr
-						hasNamed := false
-						namedNames := make(map[string]bool)
-						for _, arg := range e.Args {
-							if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
-								hasNamed = true
-								namedNames[named.Name] = true
-								// Validate named argument type if field exists
-								if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
-									valT, err := inf.inferExpr(named.Value)
-									if err != nil {
-										return nil, err
-									}
-									if !IsAssignableTo(valT, expectedFieldT) {
-										return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
-									}
-								}
-							} else {
-								posArgs = append(posArgs, arg)
-							}
-						}
-
-						minArgs := initFn.MinArgs()
-						maxArgs := initFn.MaxArgs()
-						if !hasNamed {
-							if len(posArgs) < minArgs {
-								return nil, inf.nodeErr(e, "struct '%s' constructor expects at least %d arguments, got %d", st.Name, minArgs, len(posArgs))
-							}
-							if maxArgs != -1 && len(posArgs) > maxArgs {
-								return nil, inf.nodeErr(e, "struct '%s' constructor expects at most %d arguments, got %d", st.Name, maxArgs, len(posArgs))
-							}
-						} else {
-							// When named arguments are present, positional arguments must not exceed maxArgs
-							if maxArgs != -1 && len(posArgs) > maxArgs {
-								return nil, inf.nodeErr(e, "struct '%s' constructor expects at most %d arguments, got %d", st.Name, maxArgs, len(posArgs))
-							}
-						}
-
-						for i, arg := range posArgs {
-							var expectedParamT Type
-							if i < len(argTuple.Elems)-1 {
-								expectedParamT = argTuple.Elems[i]
-							} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
-								expectedParamT = argTuple.Elems[len(argTuple.Elems)-1]
-							} else if i < len(argTuple.Elems) {
-								expectedParamT = argTuple.Elems[i]
-							}
-							if expectedParamT != nil {
-								argT, err := inf.inferExpr(arg)
-								if err != nil {
-									return nil, err
-								}
-								if !IsAssignableTo(argT, expectedParamT) {
-									return nil, inf.nodeErr(arg, "type mismatch in argument %d of struct '%s' constructor: expected %s, got %s", i+1, st.Name, qual(expectedParamT, argT), qual(argT, expectedParamT))
-								}
-							}
-						}
-					}
-				}
-			}
-			return st, nil
-		}
-		if iface, ok := effCalleeT.(*InterfaceType); ok && iface.Name == "Error" {
-			for _, argExpr := range e.Args {
-				if _, err := inf.inferExpr(argExpr); err != nil {
-					return nil, err
-				}
-			}
-			return iface, nil
-		}
-		if fnT, ok := effCalleeT.(*FuncType); ok {
-			if len(fnT.TypeParams) > 0 {
-				bindings := make(map[string]Type)
-				argTuple, isTuple := fnT.Arg.(*TupleType)
-				if isTuple {
-					callArgs := e.Args
-					if fnT.BlockParam == nil && e.Block != nil {
-						callArgs = append(append([]ast.Expr(nil), e.Args...), e.Block)
-					}
-					// Phase A: Non-lambda arguments
-					for i, argExpr := range callArgs {
-						if _, isLambda := argExpr.(*ast.LambdaExpr); !isLambda {
-							argT, err := inf.inferExpr(argExpr)
-							if err == nil {
-								var paramT Type
-								if i < len(argTuple.Elems) {
-									paramT = argTuple.Elems[i]
-								} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
-									paramT = argTuple.Elems[len(argTuple.Elems)-1]
-								}
-								if paramT != nil {
-									unifyTypeParams(paramT, argT, bindings)
-								}
-							}
-						}
-					}
-					// Phase B: Lambda arguments with propagated parameter types
-					for i, argExpr := range callArgs {
-						if lam, isLambda := argExpr.(*ast.LambdaExpr); isLambda {
-							var paramT Type
-							if i < len(argTuple.Elems) {
-								paramT = argTuple.Elems[i]
-							} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
-								paramT = argTuple.Elems[len(argTuple.Elems)-1]
-							}
-							if paramT != nil {
-								subParamT := Substitute(paramT, bindings)
-								if lamFnT, ok := subParamT.(*FuncType); ok {
-									if lamArgTup, isTup := lamFnT.Arg.(*TupleType); isTup {
-										for idx := range lam.Params {
-											if lam.Params[idx].TypeAnnot == "" && idx < len(lamArgTup.Elems) && lamArgTup.Elems[idx] != TypeUnknown {
-												lam.Params[idx].TypeAnnot = lamArgTup.Elems[idx].String()
-											}
-										}
-									}
-								}
-								lamT, err := inf.inferExpr(lam)
-								if err == nil {
-									unifyTypeParams(paramT, lamT, bindings)
-								}
-							}
-						}
-					}
-					// Phase B2: e.Block if fnT.BlockParam != nil
-					if fnT.BlockParam != nil && e.Block != nil {
-						subBp := Substitute(fnT.BlockParam, bindings)
-						if bpFunc, isFunc := subBp.(*FuncType); isFunc {
-							if argTup, isTup := bpFunc.Arg.(*TupleType); isTup {
-								for idx := range e.Block.Params {
-									if e.Block.Params[idx].TypeAnnot == "" && idx < len(argTup.Elems) && argTup.Elems[idx] != TypeUnknown {
-										e.Block.Params[idx].TypeAnnot = argTup.Elems[idx].String()
-									}
-								}
-							}
-						}
-						bT, err := inf.inferExpr(e.Block)
-						if err == nil {
-							unifyTypeParams(fnT.BlockParam, bT, bindings)
-						}
-					}
-				}
-				typeArgs := make([]Type, len(fnT.TypeParams))
-				for i, tp := range fnT.TypeParams {
-					if bound, ok := bindings[tp.Name]; ok {
-						typeArgs[i] = bound
-					} else if tp.Default != nil {
-						typeArgs[i] = Substitute(tp.Default, bindings)
-						bindings[tp.Name] = typeArgs[i]
-					} else {
-						typeArgs[i] = TypeUnknown
-						bindings[tp.Name] = TypeUnknown
-					}
-				}
-				if err := ValidateTypeConstraints(fnT.TypeParams, typeArgs); err != nil {
-					return nil, inf.nodeErr(e, "%s", err.Error())
-				}
-				if inf.CallTypeArgs != nil {
-					inf.CallTypeArgs[e] = typeArgs
-				}
-				origFnT := fnT
-				instFn := Substitute(fnT, bindings).(*FuncType)
-				instFn.TypeParams = nil
-				instFn.TypeArgs = typeArgs
-				fnT = instFn
-				calleeT = instFn
-				if inf.funcCtx != nil && (inf.funcCtx.fnType == origFnT || inf.funcCtx.fnType == fnT || (inf.funcCtx.mirrorFnType != nil && (inf.funcCtx.mirrorFnType == origFnT || inf.funcCtx.mirrorFnType == fnT))) {
-					inf.funcCtx.selfCalled = true
-				}
-			}
-			if inf.funcCtx != nil && (inf.funcCtx.fnType == fnT || (inf.funcCtx.mirrorFnType != nil && inf.funcCtx.mirrorFnType == fnT)) {
-				inf.funcCtx.selfCalled = true
-			}
-			args := e.Args
-			if fnT.BlockParam != nil {
-				if e.Block != nil {
-					// If the block parameter is a function type with known argument types,
-					// propagate them to unannotated parameters of the block literal so they don't warn as Unknown.
-					if bpFunc, isFunc := fnT.BlockParam.(*FuncType); isFunc {
-						if argTup, isTup := bpFunc.Arg.(*TupleType); isTup {
-							for idx := range e.Block.Params {
-								if e.Block.Params[idx].TypeAnnot == "" {
-									if idx < len(argTup.Elems) && argTup.Elems[idx] != TypeUnknown {
-										e.Block.Params[idx].TypeAnnot = argTup.Elems[idx].String()
-									}
-								}
-							}
-						}
-					}
-					bT, err := inf.inferExpr(e.Block)
-					if err != nil {
-						return nil, err
-					}
-					if fnT.BlockParam != TypeUnknown && !IsAssignableTo(bT, fnT.BlockParam) {
-						return nil, inf.nodeErr(e.Block, "type mismatch for block argument: expected %s, got %s", qual(fnT.BlockParam, bT), qual(bT, fnT.BlockParam))
-					}
-				} else if !fnT.BlockOpt {
-					return nil, inf.nodeErr(e, "function requires a block argument (&block)")
-				}
-			} else {
-				if e.Block != nil {
-					args = append(append([]ast.Expr(nil), e.Args...), e.Block)
-				}
-			}
-
-			if argTuple, ok := fnT.Arg.(*TupleType); ok {
-				minArgs := fnT.MinArgs()
-				maxArgs := fnT.MaxArgs()
-				if len(args) < minArgs {
-					return nil, inf.nodeErr(e, "function expects at least %d arguments, got %d", minArgs, len(args))
-				}
-				if maxArgs != -1 && len(args) > maxArgs {
-					return nil, inf.nodeErr(e, "function expects at most %d arguments, got %d", maxArgs, len(args))
-				}
-				for i, argExpr := range args {
-					argT, err := inf.inferExpr(argExpr)
-					if err != nil {
-						return nil, err
-					}
-					if i < len(argTuple.Elems) {
-						expectedParamT := argTuple.Elems[i]
-						if !IsAssignableTo(argT, expectedParamT) {
-							return nil, inf.nodeErr(argExpr, "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
-						}
-					} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
-						expectedParamT := argTuple.Elems[len(argTuple.Elems)-1]
-						if !IsAssignableTo(argT, expectedParamT) {
-							return nil, inf.nodeErr(argExpr, "type mismatch in variadic argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
-						}
-					}
-				}
-			} else if ut, ok := fnT.Arg.(*UnionType); ok {
-				argTypes := make([]Type, len(args))
-				for i, argExpr := range args {
-					argT, err := inf.inferExpr(argExpr)
-					if err != nil {
-						return nil, err
-					}
-					argTypes[i] = argT
-				}
-				matched := false
-				var lastMismatch error
-				for _, cand := range ut.Members {
-					if optTuple, ok := cand.(*TupleType); ok {
-						if !optTuple.IsVariadic && len(args) != len(optTuple.Elems) {
-							continue
-						}
-						if optTuple.IsVariadic && len(optTuple.Elems) > 0 && len(args) < len(optTuple.Elems)-1 {
-							continue
-						}
-						typesMatch := true
-						for i, argT := range argTypes {
-							var expectedParamT Type
-							if i < len(optTuple.Elems) {
-								expectedParamT = optTuple.Elems[i]
-							} else if optTuple.IsVariadic && len(optTuple.Elems) > 0 {
-								expectedParamT = optTuple.Elems[len(optTuple.Elems)-1]
-							}
-							if expectedParamT != nil && !IsAssignableTo(argT, expectedParamT) {
-								typesMatch = false
-								lastMismatch = inf.nodeErr(args[i], "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
-								break
-							}
-						}
-						if typesMatch {
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
-					if lastMismatch != nil {
-						return nil, lastMismatch
-					}
-					return nil, inf.nodeErr(e, "no matching signature for function call with %d arguments", len(args))
-				}
-			} else {
-				for _, argExpr := range args {
-					if _, err := inf.inferExpr(argExpr); err != nil {
-						return nil, err
-					}
-				}
-			}
-			return fnT.Ret, nil
-		}
-		for _, argExpr := range e.Args {
-			if _, err := inf.inferExpr(argExpr); err != nil {
-				return nil, err
-			}
-		}
-		if e.Block != nil {
-			if _, err := inf.inferExpr(e.Block); err != nil {
-				return nil, err
-			}
-		}
-		return TypeUnknown, nil
+		return inf.inferCallWithCalleeType(e, e.Args, e.Block, calleeT)
 	case *ast.MemberAccessExpr:
 		targetT, err := inf.inferExpr(e.Target)
 		if err != nil {
 			return nil, err
 		}
-		effTargetT := targetT
-		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
-			effTargetT = tp.Constraint
-		}
-		if st, ok := effTargetT.(*StructType); ok {
-			return st.LookupMember(e.Member)
-		}
-		if it, ok := effTargetT.(*InterfaceType); ok {
-			resolvedIt := ResolveInterfaceForReceiver(it, targetT)
-			if mSig, ok := resolvedIt.LookupMethod(e.Member); ok {
-				return mSig, nil
-			}
-			return nil, inf.nodeErr(e, "interface %s has no method '%s'", it.Name, e.Member)
-		}
-		if targetT == TypeUnknown {
-			return TypeUnknown, nil
-		}
-		if bSig, ok := LookupBuiltinTypeMethod(targetT, e.Member); ok {
-			return bSig, nil
-		}
-		if u, ok := targetT.(*UnionType); ok {
-			nonNilT := removeNilFromType(u)
-			if nonNilT != TypeNil {
-				if bSig, ok := LookupBuiltinTypeMethod(nonNilT, e.Member); ok {
-					return bSig, nil
-				}
-			}
-		}
-		return nil, inf.nodeErr(e, "cannot access member '%s' on non-struct/interface type %s", e.Member, targetT)
+		return inf.inferMemberOnType(e, targetT, e.Member)
 	case *ast.NamedArgExpr:
 		return inf.inferExpr(e.Value)
 	case *ast.TypeInstExpr:
@@ -4214,75 +3614,7 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		if e.TypeArg != "" && isGenericCalleeType(targetT) {
-			if argT, err := inf.parseTypeAnnot(e.TypeArg); err == nil {
-				if resT, handled, err := inf.instantiateExplicitTypeArgs(e, targetT, []Type{argT}, true); err != nil {
-					return nil, err
-				} else if handled {
-					return resT, nil
-				}
-			}
-		}
-		if _, err := inf.inferExpr(e.Index); err != nil {
-			return nil, err
-		}
-		effTargetT := targetT
-		if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
-			effTargetT = tp.Constraint
-		}
-		if st, ok := effTargetT.(*StructType); ok {
-			if m, err := st.LookupMember("[]"); err == nil {
-				if fnT, ok := m.(*FuncType); ok {
-					return fnT.Ret, nil
-				}
-			}
-		}
-		if it, ok := effTargetT.(*InterfaceType); ok {
-			resolvedIt := ResolveInterfaceForReceiver(it, targetT)
-			if m, ok := resolvedIt.LookupMethod("[]"); ok {
-				return m.Ret, nil
-			}
-		}
-		if tt, ok := effTargetT.(*TupleType); ok {
-			if len(tt.Elems) > 0 {
-				if !tt.IsVariadic {
-					if intLit, ok := e.Index.(*ast.IntLit); ok && intLit.BigValue == nil {
-						idx := int(intLit.Value)
-						if idx >= 0 && idx < len(tt.Elems) {
-							return tt.Elems[idx], nil
-						}
-					} else if uExpr, ok := e.Index.(*ast.UnaryExpr); ok && uExpr.Op == "-" {
-						if intLit, ok := uExpr.Expr.(*ast.IntLit); ok && intLit.BigValue == nil {
-							idx := len(tt.Elems) - int(intLit.Value)
-							if idx >= 0 && idx < len(tt.Elems) {
-								return tt.Elems[idx], nil
-							}
-						}
-					}
-					return NewUnionType(tt.Elems...), nil
-				}
-				return NewUnionType(tt.Elems...), nil
-			}
-		} else if dt, ok := effTargetT.(*DictType); ok {
-			return dt.Value, nil
-		} else if effTargetT == TypeString {
-			return TypeString, nil
-		} else if effTargetT == TypeBytes {
-			return TypeInt, nil
-		} else if effTargetT == TypeMatch || removeNilFromType(effTargetT) == TypeMatch {
-			idxT, err := inf.inferExpr(e.Index)
-			if err != nil {
-				return nil, err
-			}
-			if idxT != TypeUnknown && !IsAssignableTo(idxT, NewUnionType(TypeInt, TypeString)) {
-				return nil, inf.nodeErr(e.Index, "match index must be Int or String, got %s", idxT)
-			}
-			if intLit, ok := e.Index.(*ast.IntLit); ok && intLit.BigValue == nil && intLit.Value == 0 {
-				return TypeString, nil
-			}
-			return NewUnionType(TypeString, TypeNil), nil
-		}
-		return TypeUnknown, nil
+		return inf.inferIndexOnType(e, targetT, e.Index, e.TypeArg)
 	case *ast.ModuleAccessExpr:
 		if mod, ok := inf.modules[e.Module]; ok {
 			if len(e.Member) == 0 {
@@ -4312,6 +3644,10 @@ func (inf *Inferencer) inferExprInternal(expr ast.Expr) (Type, error) {
 	case *ast.ElseExpr:
 		t, _, err := inf.inferElseExpr(e)
 		return t, err
+	case *ast.CoalesceExpr:
+		return inf.inferCoalesceExpr(e)
+	case *ast.OptionalChainExpr:
+		return inf.inferOptionalChainExpr(e)
 
 	case *ast.LambdaExpr:
 		paramTypes := make([]Type, len(e.Params))
@@ -5655,6 +4991,971 @@ func (inf *Inferencer) inferElseExpr(e *ast.ElseExpr) (Type, bool, error) {
 		return &TupleType{Elems: []Type{}}, true, nil
 	}
 	return NewUnionType(outTypes...), true, nil
+}
+
+func (inf *Inferencer) inferMemberOnType(e ast.Expr, targetT Type, member string) (Type, error) {
+	effTargetT := targetT
+	if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
+		effTargetT = tp.Constraint
+	}
+	if st, ok := effTargetT.(*StructType); ok {
+		return st.LookupMember(member)
+	}
+	if it, ok := effTargetT.(*InterfaceType); ok {
+		resolvedIt := ResolveInterfaceForReceiver(it, targetT)
+		if mSig, ok := resolvedIt.LookupMethod(member); ok {
+			return mSig, nil
+		}
+		return nil, inf.nodeErr(e, "interface %s has no method '%s'", it.Name, member)
+	}
+	if targetT == TypeUnknown {
+		return TypeUnknown, nil
+	}
+	if bSig, ok := LookupBuiltinTypeMethod(targetT, member); ok {
+		return bSig, nil
+	}
+	if u, ok := targetT.(*UnionType); ok {
+		nonNilT := removeNilFromType(u)
+		if nonNilT != TypeNil {
+			if bSig, ok := LookupBuiltinTypeMethod(nonNilT, member); ok {
+				return bSig, nil
+			}
+		}
+	}
+	return nil, inf.nodeErr(e, "cannot access member '%s' on non-struct/interface type %s", member, targetT)
+}
+
+func (inf *Inferencer) inferIndexOnType(e ast.Expr, targetT Type, indexExpr ast.Expr, typeArg string) (Type, error) {
+	if typeArg != "" && isGenericCalleeType(targetT) {
+		if argT, err := inf.parseTypeAnnot(typeArg); err == nil {
+			if resT, handled, err := inf.instantiateExplicitTypeArgs(e, targetT, []Type{argT}, true); err != nil {
+				return nil, err
+			} else if handled {
+				return resT, nil
+			}
+		}
+	}
+	idxT, err := inf.inferExpr(indexExpr)
+	if err != nil {
+		return nil, err
+	}
+	effTargetT := targetT
+	if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
+		effTargetT = tp.Constraint
+	}
+	if st, ok := effTargetT.(*StructType); ok {
+		if m, err := st.LookupMember("[]"); err == nil {
+			if fnT, ok := m.(*FuncType); ok {
+				return fnT.Ret, nil
+			}
+		}
+	}
+	if it, ok := effTargetT.(*InterfaceType); ok {
+		resolvedIt := ResolveInterfaceForReceiver(it, targetT)
+		if m, ok := resolvedIt.LookupMethod("[]"); ok {
+			return m.Ret, nil
+		}
+	}
+	if tt, ok := effTargetT.(*TupleType); ok {
+		if len(tt.Elems) > 0 {
+			if !tt.IsVariadic {
+				if intLit, ok := indexExpr.(*ast.IntLit); ok && intLit.BigValue == nil {
+					idx := int(intLit.Value)
+					if idx >= 0 && idx < len(tt.Elems) {
+						return tt.Elems[idx], nil
+					}
+				} else if uExpr, ok := indexExpr.(*ast.UnaryExpr); ok && uExpr.Op == "-" {
+					if intLit, ok := uExpr.Expr.(*ast.IntLit); ok && intLit.BigValue == nil {
+						idx := len(tt.Elems) - int(intLit.Value)
+						if idx >= 0 && idx < len(tt.Elems) {
+							return tt.Elems[idx], nil
+						}
+					}
+				}
+				return NewUnionType(tt.Elems...), nil
+			}
+			return NewUnionType(tt.Elems...), nil
+		}
+	} else if dt, ok := effTargetT.(*DictType); ok {
+		return dt.Value, nil
+	} else if effTargetT == TypeString {
+		return TypeString, nil
+	} else if effTargetT == TypeBytes {
+		return TypeInt, nil
+	} else if effTargetT == TypeMatch || removeNilFromType(effTargetT) == TypeMatch {
+		if idxT != TypeUnknown && !IsAssignableTo(idxT, NewUnionType(TypeInt, TypeString)) {
+			return nil, inf.nodeErr(indexExpr, "match index must be Int or String, got %s", idxT)
+		}
+		if intLit, ok := indexExpr.(*ast.IntLit); ok && intLit.BigValue == nil && intLit.Value == 0 {
+			return TypeString, nil
+		}
+		return NewUnionType(TypeString, TypeNil), nil
+	}
+	return TypeUnknown, nil
+}
+
+func (inf *Inferencer) inferTupleMethodCall(e ast.Expr, targetT Type, member string, args []ast.Expr) (Type, bool, error) {
+	effTargetT := targetT
+	if tp, ok := targetT.(*TypeParamType); ok && tp.Constraint != nil {
+		effTargetT = tp.Constraint
+	}
+	targetTuple, ok := effTargetT.(*TupleType)
+	if !ok {
+		return nil, false, nil
+	}
+	switch member {
+	case "Append":
+		if len(args) == 0 {
+			return nil, true, inf.nodeErr(e, "Append expects at least 1 argument, got 0")
+		}
+		var argT Type
+		if len(args) == 1 {
+			var err error
+			argT, err = inf.inferExpr(args[0])
+			if err != nil {
+				return nil, true, err
+			}
+		} else {
+			tupElems := make([]Type, len(args))
+			for i, a := range args {
+				t, err := inf.inferExpr(a)
+				if err != nil {
+					return nil, true, err
+				}
+				tupElems[i] = t
+			}
+			argT = &TupleType{Elems: tupElems}
+		}
+		return appendToTuple(targetTuple, []Type{argT}, false), true, nil
+	case "Prepend":
+		if len(args) == 0 {
+			return nil, true, inf.nodeErr(e, "Prepend expects at least 1 argument, got 0")
+		}
+		var argT Type
+		if len(args) == 1 {
+			var err error
+			argT, err = inf.inferExpr(args[0])
+			if err != nil {
+				return nil, true, err
+			}
+		} else {
+			tupElems := make([]Type, len(args))
+			for i, a := range args {
+				t, err := inf.inferExpr(a)
+				if err != nil {
+					return nil, true, err
+				}
+				tupElems[i] = t
+			}
+			argT = &TupleType{Elems: tupElems}
+		}
+		newElems := append([]Type{argT}, targetTuple.Elems...)
+		return &TupleType{Elems: newElems, IsVariadic: targetTuple.IsVariadic}, true, nil
+	case "Concat":
+		if len(args) < 1 {
+			return nil, true, inf.nodeErr(e, "Concat expects at least 1 argument, got 0")
+		}
+		curTuple := targetTuple
+		for i, arg := range args {
+			argT, err := inf.inferExpr(arg)
+			if err != nil {
+				return nil, true, err
+			}
+			effArgT := argT
+			if tp, ok := argT.(*TypeParamType); ok && tp.Constraint != nil {
+				effArgT = tp.Constraint
+			}
+			if argTuple, ok := effArgT.(*TupleType); ok {
+				curTuple = appendToTuple(curTuple, argTuple.Elems, argTuple.IsVariadic)
+			} else if effArgT == TypeUnknown {
+				curTuple = appendToTuple(curTuple, []Type{TypeUnknown}, true)
+			} else {
+				return nil, true, inf.nodeErr(arg, "Concat argument %d must be a tuple, got %s", i+1, argT)
+			}
+		}
+		return curTuple, true, nil
+	case "Slice":
+		if len(args) < 1 || len(args) > 2 {
+			return nil, true, inf.nodeErr(e, "Slice expects 1 or 2 arguments, got %d", len(args))
+		}
+		for _, arg := range args {
+			argT, err := inf.inferExpr(arg)
+			if err != nil {
+				return nil, true, err
+			}
+			if argT != TypeInt && argT != TypeUnknown {
+				return nil, true, inf.nodeErr(arg, "Slice arguments must be Int, got %s", argT)
+			}
+		}
+		if len(args) == 1 {
+			if intLit, ok := args[0].(*ast.IntLit); ok && intLit.BigValue == nil && intLit.Value >= 0 && int(intLit.Value) <= len(targetTuple.Elems) && !targetTuple.IsVariadic {
+				return &TupleType{Elems: append([]Type(nil), targetTuple.Elems[int(intLit.Value):]...)}, true, nil
+			}
+		} else if len(args) == 2 {
+			sLit, sOK := args[0].(*ast.IntLit)
+			eLit, eOK := args[1].(*ast.IntLit)
+			if sOK && eOK && sLit.BigValue == nil && eLit.BigValue == nil && sLit.Value >= 0 && eLit.Value >= sLit.Value && int(eLit.Value) <= len(targetTuple.Elems) && !targetTuple.IsVariadic {
+				return &TupleType{Elems: append([]Type(nil), targetTuple.Elems[int(sLit.Value):int(eLit.Value)]...)}, true, nil
+			}
+		}
+		var elemUnion []Type
+		for _, el := range targetTuple.Elems {
+			elemUnion = append(elemUnion, el)
+		}
+		var retElem Type = TypeUnknown
+		if len(elemUnion) > 0 {
+			retElem = NewUnionType(elemUnion...)
+		}
+		return &TupleType{Elems: []Type{retElem}, IsVariadic: true}, true, nil
+	}
+	return nil, false, nil
+}
+
+func (inf *Inferencer) inferCallWithCalleeType(e ast.Expr, callArgsOrig []ast.Expr, block *ast.BlockLiteral, calleeT Type) (Type, error) {
+	effCalleeT := calleeT
+	if tp, ok := calleeT.(*TypeParamType); ok && tp.Constraint != nil {
+		effCalleeT = tp.Constraint
+	}
+	if st, ok := effCalleeT.(*StructType); ok {
+		if len(st.TypeParams) > 0 && len(st.TypeArgs) == 0 {
+			bindings := make(map[string]Type)
+			argStartIdx := 0
+			if len(callArgsOrig) >= 2 {
+				if _, isNamed := callArgsOrig[0].(*ast.NamedArgExpr); !isNamed {
+					if firstT, err := inf.inferExpr(callArgsOrig[0]); err == nil {
+						if firstSt, ok := firstT.(*StructType); ok && sameStructDecl(firstSt, st) && len(firstSt.TypeArgs) == len(st.TypeParams) {
+							hasNamedInRest := false
+							for _, a := range callArgsOrig[1:] {
+								if _, ok := a.(*ast.NamedArgExpr); ok {
+									hasNamedInRest = true
+									break
+								}
+							}
+							isCopy := hasNamedInRest
+							if !isCopy {
+								var firstExpectedT Type
+								maxPositional := 0
+								if initFn, hasInit := st.Methods["init"]; hasInit {
+									maxPositional = initFn.MaxArity
+									if tup, ok := initFn.Arg.(*TupleType); ok && len(tup.Elems) > 0 {
+										firstExpectedT = tup.Elems[0]
+									}
+								} else {
+									maxPositional = len(st.FieldOrder)
+									if len(st.FieldOrder) > 0 {
+										firstExpectedT = st.Fields[st.FieldOrder[0]]
+									}
+								}
+								if maxPositional >= 0 && len(callArgsOrig) > maxPositional {
+									isCopy = true
+								} else if firstExpectedT != nil && firstExpectedT != TypeUnknown {
+									testBindings := make(map[string]Type)
+									unifyTypeParams(firstExpectedT, firstT, testBindings)
+									subExpected := Substitute(firstExpectedT, testBindings)
+									if !IsAssignableTo(firstT, subExpected) {
+										isCopy = true
+									} else {
+										for _, tp := range st.TypeParams {
+											if bound, hasB := testBindings[tp.Name]; hasB && tp.Constraint != nil {
+												subC := Substitute(tp.Constraint, testBindings)
+												if !IsAssignableTo(bound, subC) {
+													isCopy = true
+													break
+												}
+											}
+										}
+									}
+								}
+							}
+							if isCopy {
+								for i, tp := range st.TypeParams {
+									bindings[tp.Name] = firstSt.TypeArgs[i]
+								}
+								argStartIdx = 1
+							}
+						}
+					}
+				}
+			}
+			var initTuple *TupleType
+			if initFn, hasInit := st.Methods["init"]; hasInit {
+				if tup, ok := initFn.Arg.(*TupleType); ok {
+					initTuple = tup
+				}
+			}
+			posIdx := 0
+			for i := argStartIdx; i < len(callArgsOrig); i++ {
+				arg := callArgsOrig[i]
+				if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
+					if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
+						valT, err := inf.inferExpr(named.Value)
+						if err == nil {
+							unifyTypeParams(expectedFieldT, valT, bindings)
+						}
+					}
+				} else {
+					var expectedParamT Type
+					if initTuple != nil {
+						if posIdx < len(initTuple.Elems) {
+							expectedParamT = initTuple.Elems[posIdx]
+						}
+					} else if posIdx < len(st.FieldOrder) {
+						fName := st.FieldOrder[posIdx]
+						expectedParamT = st.Fields[fName]
+					}
+					if expectedParamT != nil {
+						valT, err := inf.inferExpr(arg)
+						if err == nil {
+							unifyTypeParams(expectedParamT, valT, bindings)
+						}
+					}
+					posIdx++
+				}
+			}
+			typeArgs := make([]Type, len(st.TypeParams))
+			for i, tp := range st.TypeParams {
+				if bound, ok := bindings[tp.Name]; ok {
+					typeArgs[i] = bound
+				} else if tp.Default != nil {
+					typeArgs[i] = Substitute(tp.Default, bindings)
+					bindings[tp.Name] = typeArgs[i]
+				} else {
+					typeArgs[i] = TypeUnknown
+				}
+			}
+			if err := ValidateTypeConstraints(st.TypeParams, typeArgs); err != nil {
+				return nil, inf.nodeErr(e, "%s", err.Error())
+			}
+			st = InstantiateStruct(st, typeArgs)
+			calleeT = st
+		}
+		isCopyUpdate := false
+		if len(callArgsOrig) >= 2 {
+			if _, isNamed := callArgsOrig[0].(*ast.NamedArgExpr); !isNamed {
+				if firstT, err := inf.inferExpr(callArgsOrig[0]); err == nil && firstT.Equals(st) {
+					hasNamedInRest := false
+					for _, a := range callArgsOrig[1:] {
+						if _, ok := a.(*ast.NamedArgExpr); ok {
+							hasNamedInRest = true
+							break
+						}
+					}
+					if hasNamedInRest {
+						isCopyUpdate = true
+					} else {
+						var firstExpectedT Type
+						maxPositional := 0
+						if initFn, hasInit := st.Methods["init"]; hasInit {
+							maxPositional = initFn.MaxArity
+							if tup, ok := initFn.Arg.(*TupleType); ok && len(tup.Elems) > 0 {
+								firstExpectedT = tup.Elems[0]
+							}
+						} else {
+							maxPositional = len(st.FieldOrder)
+							if len(st.FieldOrder) > 0 {
+								firstExpectedT = st.Fields[st.FieldOrder[0]]
+							}
+						}
+						if maxPositional >= 0 && len(callArgsOrig) > maxPositional {
+							isCopyUpdate = true
+						} else if firstExpectedT != nil && firstExpectedT != TypeUnknown && !IsAssignableTo(firstT, firstExpectedT) {
+							isCopyUpdate = true
+						}
+					}
+				}
+			}
+		}
+		if isCopyUpdate {
+			posIdx := 0
+			for i := 1; i < len(callArgsOrig); i++ {
+				arg := callArgsOrig[i]
+				if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
+					if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
+						valT, err := inf.inferExpr(named.Value)
+						if err != nil {
+							return nil, err
+						}
+						if !IsAssignableTo(valT, expectedFieldT) {
+							return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
+						}
+					} else {
+						return nil, inf.nodeErr(named, "unknown field '%s' in struct '%s'", named.Name, st.Name)
+					}
+				} else {
+					if posIdx < len(st.FieldOrder) {
+						fName := st.FieldOrder[posIdx]
+						expectedFieldT := st.Fields[fName]
+						valT, err := inf.inferExpr(arg)
+						if err != nil {
+							return nil, err
+						}
+						if !IsAssignableTo(valT, expectedFieldT) {
+							return nil, inf.nodeErr(arg, "type mismatch for field '%s' in struct '%s': expected %s, got %s", fName, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
+						}
+						posIdx++
+					} else {
+						return nil, inf.nodeErr(arg, "too many arguments for struct '%s' update", st.Name)
+					}
+				}
+			}
+		} else {
+			if initFn, hasInit := st.Methods["init"]; hasInit {
+				if argTuple, ok := initFn.Arg.(*TupleType); ok {
+					var posArgs []ast.Expr
+					hasNamed := false
+					namedNames := make(map[string]bool)
+					for _, arg := range callArgsOrig {
+						if named, isNamed := arg.(*ast.NamedArgExpr); isNamed {
+							hasNamed = true
+							namedNames[named.Name] = true
+							if expectedFieldT, hasField := st.Fields[named.Name]; hasField {
+								valT, err := inf.inferExpr(named.Value)
+								if err != nil {
+									return nil, err
+								}
+								if !IsAssignableTo(valT, expectedFieldT) {
+									return nil, inf.nodeErr(named.Value, "type mismatch for field '%s' in struct '%s': expected %s, got %s", named.Name, st.Name, qual(expectedFieldT, valT), qual(valT, expectedFieldT))
+								}
+							}
+						} else {
+							posArgs = append(posArgs, arg)
+						}
+					}
+
+					minArgs := initFn.MinArgs()
+					maxArgs := initFn.MaxArgs()
+					if !hasNamed {
+						if len(posArgs) < minArgs {
+							return nil, inf.nodeErr(e, "struct '%s' constructor expects at least %d arguments, got %d", st.Name, minArgs, len(posArgs))
+						}
+						if maxArgs != -1 && len(posArgs) > maxArgs {
+							return nil, inf.nodeErr(e, "struct '%s' constructor expects at most %d arguments, got %d", st.Name, maxArgs, len(posArgs))
+						}
+					} else {
+						if maxArgs != -1 && len(posArgs) > maxArgs {
+							return nil, inf.nodeErr(e, "struct '%s' constructor expects at most %d arguments, got %d", st.Name, maxArgs, len(posArgs))
+						}
+					}
+
+					for i, arg := range posArgs {
+						var expectedParamT Type
+						if i < len(argTuple.Elems)-1 {
+							expectedParamT = argTuple.Elems[i]
+						} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
+							expectedParamT = argTuple.Elems[len(argTuple.Elems)-1]
+						} else if i < len(argTuple.Elems) {
+							expectedParamT = argTuple.Elems[i]
+						}
+						if expectedParamT != nil {
+							argT, err := inf.inferExpr(arg)
+							if err != nil {
+								return nil, err
+							}
+							if !IsAssignableTo(argT, expectedParamT) {
+								return nil, inf.nodeErr(arg, "type mismatch in argument %d of struct '%s' constructor: expected %s, got %s", i+1, st.Name, qual(expectedParamT, argT), qual(argT, expectedParamT))
+							}
+						}
+					}
+				}
+			}
+		}
+		return st, nil
+	}
+	if iface, ok := effCalleeT.(*InterfaceType); ok && iface.Name == "Error" {
+		for _, argExpr := range callArgsOrig {
+			if _, err := inf.inferExpr(argExpr); err != nil {
+				return nil, err
+			}
+		}
+		return iface, nil
+	}
+	if fnT, ok := effCalleeT.(*FuncType); ok {
+		if len(fnT.TypeParams) > 0 {
+			bindings := make(map[string]Type)
+			argTuple, isTuple := fnT.Arg.(*TupleType)
+			if isTuple {
+				callArgs := callArgsOrig
+				if fnT.BlockParam == nil && block != nil {
+					callArgs = append(append([]ast.Expr(nil), callArgsOrig...), block)
+				}
+				// Phase A: Non-lambda arguments
+				for i, argExpr := range callArgs {
+					if _, isLambda := argExpr.(*ast.LambdaExpr); !isLambda {
+						argT, err := inf.inferExpr(argExpr)
+						if err == nil {
+							var paramT Type
+							if i < len(argTuple.Elems) {
+								paramT = argTuple.Elems[i]
+							} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
+								paramT = argTuple.Elems[len(argTuple.Elems)-1]
+							}
+							if paramT != nil {
+								unifyTypeParams(paramT, argT, bindings)
+							}
+						}
+					}
+				}
+				// Phase B: Lambda arguments with propagated parameter types
+				for i, argExpr := range callArgs {
+					if lam, isLambda := argExpr.(*ast.LambdaExpr); isLambda {
+						var paramT Type
+						if i < len(argTuple.Elems) {
+							paramT = argTuple.Elems[i]
+						} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
+							paramT = argTuple.Elems[len(argTuple.Elems)-1]
+						}
+						if paramT != nil {
+							subParamT := Substitute(paramT, bindings)
+							if lamFnT, ok := subParamT.(*FuncType); ok {
+								if lamArgTup, isTup := lamFnT.Arg.(*TupleType); isTup {
+									for idx := range lam.Params {
+										if lam.Params[idx].TypeAnnot == "" && idx < len(lamArgTup.Elems) && lamArgTup.Elems[idx] != TypeUnknown {
+											lam.Params[idx].TypeAnnot = lamArgTup.Elems[idx].String()
+										}
+									}
+								}
+							}
+							lamT, err := inf.inferExpr(lam)
+							if err == nil {
+								unifyTypeParams(paramT, lamT, bindings)
+							}
+						}
+					}
+				}
+				// Phase B2: block if fnT.BlockParam != nil
+				if fnT.BlockParam != nil && block != nil {
+					subBp := Substitute(fnT.BlockParam, bindings)
+					if bpFunc, isFunc := subBp.(*FuncType); isFunc {
+						if argTup, isTup := bpFunc.Arg.(*TupleType); isTup {
+							for idx := range block.Params {
+								if block.Params[idx].TypeAnnot == "" && idx < len(argTup.Elems) && argTup.Elems[idx] != TypeUnknown {
+									block.Params[idx].TypeAnnot = argTup.Elems[idx].String()
+								}
+							}
+						}
+					}
+					bT, err := inf.inferExpr(block)
+					if err == nil {
+						unifyTypeParams(fnT.BlockParam, bT, bindings)
+					}
+				}
+			}
+			typeArgs := make([]Type, len(fnT.TypeParams))
+			for i, tp := range fnT.TypeParams {
+				if bound, ok := bindings[tp.Name]; ok {
+					typeArgs[i] = bound
+				} else if tp.Default != nil {
+					typeArgs[i] = Substitute(tp.Default, bindings)
+					bindings[tp.Name] = typeArgs[i]
+				} else {
+					typeArgs[i] = TypeUnknown
+					bindings[tp.Name] = TypeUnknown
+				}
+			}
+			if err := ValidateTypeConstraints(fnT.TypeParams, typeArgs); err != nil {
+				return nil, inf.nodeErr(e, "%s", err.Error())
+			}
+			if inf.CallTypeArgs != nil {
+				inf.CallTypeArgs[e] = typeArgs
+			}
+			origFnT := fnT
+			instFn := Substitute(fnT, bindings).(*FuncType)
+			instFn.TypeParams = nil
+			instFn.TypeArgs = typeArgs
+			fnT = instFn
+			calleeT = instFn
+			if inf.funcCtx != nil && (inf.funcCtx.fnType == origFnT || inf.funcCtx.fnType == fnT || (inf.funcCtx.mirrorFnType != nil && (inf.funcCtx.mirrorFnType == origFnT || inf.funcCtx.mirrorFnType == fnT))) {
+				inf.funcCtx.selfCalled = true
+			}
+		}
+		if inf.funcCtx != nil && (inf.funcCtx.fnType == fnT || (inf.funcCtx.mirrorFnType != nil && inf.funcCtx.mirrorFnType == fnT)) {
+			inf.funcCtx.selfCalled = true
+		}
+		args := callArgsOrig
+		if fnT.BlockParam != nil {
+			if block != nil {
+				if bpFunc, isFunc := fnT.BlockParam.(*FuncType); isFunc {
+					if argTup, isTup := bpFunc.Arg.(*TupleType); isTup {
+						for idx := range block.Params {
+							if block.Params[idx].TypeAnnot == "" {
+								if idx < len(argTup.Elems) && argTup.Elems[idx] != TypeUnknown {
+									block.Params[idx].TypeAnnot = argTup.Elems[idx].String()
+								}
+							}
+						}
+					}
+				}
+				bT, err := inf.inferExpr(block)
+				if err != nil {
+					return nil, err
+				}
+				if fnT.BlockParam != TypeUnknown && !IsAssignableTo(bT, fnT.BlockParam) {
+					return nil, inf.nodeErr(block, "type mismatch for block argument: expected %s, got %s", qual(fnT.BlockParam, bT), qual(bT, fnT.BlockParam))
+				}
+			} else if !fnT.BlockOpt {
+				return nil, inf.nodeErr(e, "function requires a block argument (&block)")
+			}
+		} else {
+			if block != nil {
+				args = append(append([]ast.Expr(nil), callArgsOrig...), block)
+			}
+		}
+
+		if argTuple, ok := fnT.Arg.(*TupleType); ok {
+			minArgs := fnT.MinArgs()
+			maxArgs := fnT.MaxArgs()
+			if len(args) < minArgs {
+				return nil, inf.nodeErr(e, "function expects at least %d arguments, got %d", minArgs, len(args))
+			}
+			if maxArgs != -1 && len(args) > maxArgs {
+				return nil, inf.nodeErr(e, "function expects at most %d arguments, got %d", maxArgs, len(args))
+			}
+			for i, argExpr := range args {
+				argT, err := inf.inferExpr(argExpr)
+				if err != nil {
+					return nil, err
+				}
+				if i < len(argTuple.Elems) {
+					expectedParamT := argTuple.Elems[i]
+					if !IsAssignableTo(argT, expectedParamT) {
+						return nil, inf.nodeErr(argExpr, "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
+					}
+				} else if argTuple.IsVariadic && len(argTuple.Elems) > 0 {
+					expectedParamT := argTuple.Elems[len(argTuple.Elems)-1]
+					if !IsAssignableTo(argT, expectedParamT) {
+						return nil, inf.nodeErr(argExpr, "type mismatch in variadic argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
+					}
+				}
+			}
+		} else if ut, ok := fnT.Arg.(*UnionType); ok {
+			argTypes := make([]Type, len(args))
+			for i, argExpr := range args {
+				argT, err := inf.inferExpr(argExpr)
+				if err != nil {
+					return nil, err
+				}
+				argTypes[i] = argT
+			}
+			matched := false
+			var lastMismatch error
+			for _, cand := range ut.Members {
+				if optTuple, ok := cand.(*TupleType); ok {
+					if !optTuple.IsVariadic && len(args) != len(optTuple.Elems) {
+						continue
+					}
+					if optTuple.IsVariadic && len(optTuple.Elems) > 0 && len(args) < len(optTuple.Elems)-1 {
+						continue
+					}
+					typesMatch := true
+					for i, argT := range argTypes {
+						var expectedParamT Type
+						if i < len(optTuple.Elems) {
+							expectedParamT = optTuple.Elems[i]
+						} else if optTuple.IsVariadic && len(optTuple.Elems) > 0 {
+							expectedParamT = optTuple.Elems[len(optTuple.Elems)-1]
+						}
+						if expectedParamT != nil && !IsAssignableTo(argT, expectedParamT) {
+							typesMatch = false
+							lastMismatch = inf.nodeErr(args[i], "type mismatch in argument %d: expected %s, got %s", i+1, qual(expectedParamT, argT), qual(argT, expectedParamT))
+							break
+						}
+					}
+					if typesMatch {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
+				if lastMismatch != nil {
+					return nil, lastMismatch
+				}
+				return nil, inf.nodeErr(e, "no matching signature for function call with %d arguments", len(args))
+			}
+		} else {
+			for _, argExpr := range args {
+				if _, err := inf.inferExpr(argExpr); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return fnT.Ret, nil
+	}
+	for _, argExpr := range callArgsOrig {
+		if _, err := inf.inferExpr(argExpr); err != nil {
+			return nil, err
+		}
+	}
+	if block != nil {
+		if _, err := inf.inferExpr(block); err != nil {
+			return nil, err
+		}
+	}
+	return TypeUnknown, nil
+}
+
+func canValueSatisfyNil(t Type) bool {
+	if t == nil || t == TypeUnknown {
+		return true
+	}
+	switch typ := t.(type) {
+	case *TypeVar:
+		return true
+	case PrimType:
+		return typ == TypeNil
+	case *InterfaceType:
+		return ImplementsInterface(TypeNil, typ)
+	case *TypeParamType:
+		if typ.Constraint != nil {
+			return canValueSatisfyNil(typ.Constraint)
+		}
+		return true
+	case *UnionType:
+		for _, m := range typ.Members {
+			if canValueSatisfyNil(m) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func canValueSatisfyNilOrError(t Type) bool {
+	return canValueSatisfyNil(t) || canValueSatisfyError(t)
+}
+
+func removeNilMembers(t Type) (Type, bool) {
+	if t == nil || t == TypeUnknown {
+		return TypeUnknown, true
+	}
+	if t == TypeNil {
+		return nil, false
+	}
+	if u, ok := t.(*UnionType); ok {
+		var kept []Type
+		for _, m := range u.Members {
+			if m != TypeNil {
+				kept = append(kept, m)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, false
+		}
+		return NewUnionType(kept...), true
+	}
+	return t, true
+}
+
+func splitSafeNavType(t Type) (remaining Type, hasRemaining bool, shortTypes []Type) {
+	if t == nil || t == TypeUnknown {
+		return TypeUnknown, true, nil
+	}
+	if _, isTV := t.(*TypeVar); isTV {
+		return t, true, nil
+	}
+	switch typ := t.(type) {
+	case PrimType:
+		if typ == TypeNil {
+			return nil, false, []Type{TypeNil}
+		}
+		return t, true, nil
+	case *StructType:
+		if isStaticErrorType(typ) {
+			return nil, false, []Type{typ}
+		}
+		return t, true, nil
+	case *InterfaceType:
+		if isStaticErrorType(typ) {
+			return nil, false, []Type{typ}
+		}
+		var shorts []Type
+		if ImplementsInterface(TypeNil, typ) {
+			shorts = append(shorts, TypeNil)
+		}
+		shorts = append(shorts, BuiltinErrorIface)
+		return typ, true, shorts
+	case *TypeParamType:
+		var shorts []Type
+		if canValueSatisfyNil(typ) {
+			shorts = append(shorts, TypeNil)
+		}
+		if canValueSatisfyError(typ) {
+			shorts = append(shorts, BuiltinErrorIface)
+		}
+		return typ, true, shorts
+	case *UnionType:
+		var kept []Type
+		var shorts []Type
+		for _, m := range typ.Members {
+			if m == TypeNil {
+				shorts = append(shorts, TypeNil)
+				continue
+			}
+			if isStaticErrorType(m) {
+				shorts = append(shorts, m)
+				continue
+			}
+			kept = append(kept, m)
+		}
+		if len(kept) == 0 {
+			return nil, false, shorts
+		}
+		return NewUnionType(kept...), true, shorts
+	default:
+		return t, true, nil
+	}
+}
+
+func (inf *Inferencer) inferCoalesceExpr(e *ast.CoalesceExpr) (Type, error) {
+	leftT, err := inf.inferExpr(e.Left)
+	if err != nil {
+		return nil, err
+	}
+	rightT, err := inf.inferExpr(e.Right)
+	if err != nil {
+		return nil, err
+	}
+	if !canValueSatisfyNil(leftT) {
+		inf.addRedundantWarning(e.Pos(), "coalescing operator '??' on non-Nil type %s; right-hand side is unreachable", leftT.String())
+		return leftT, nil
+	}
+	nonNilLeft, hasNonNil := removeNilMembers(leftT)
+	if !hasNonNil {
+		return rightT, nil
+	}
+	if nonNilLeft.Equals(rightT) {
+		return nonNilLeft, nil
+	}
+	return NewUnionType(nonNilLeft, rightT), nil
+}
+
+func (inf *Inferencer) inferOptionalChainExpr(e *ast.OptionalChainExpr) (Type, error) {
+	base, steps := ast.UnwindOptionalChain(e)
+	curT, err := inf.inferExpr(base)
+	if err != nil {
+		return nil, err
+	}
+	var shortTypes []Type
+	narrowForSafe := func(step ast.Expr, t Type) (Type, error) {
+		if !canValueSatisfyNilOrError(t) {
+			inf.addRedundantWarning(step.Pos(), "null-safe operator on non-Nil/non-Error type %s", t.String())
+			return t, nil
+		}
+		rem, hasRem, shorts := splitSafeNavType(t)
+		if !hasRem {
+			return nil, inf.nodeErr(step, "cannot apply null-safe operation on %s", t.String())
+		}
+		shortTypes = append(shortTypes, shorts...)
+		return rem, nil
+	}
+
+	for i := 0; i < len(steps); i++ {
+		step := steps[i]
+		switch s := step.(type) {
+		case *ast.SafeMemberAccessExpr:
+			curT, err = narrowForSafe(s, curT)
+			if err != nil {
+				return nil, err
+			}
+			if i+1 < len(steps) {
+				if call, ok := steps[i+1].(*ast.CallExpr); ok && call.Callee == s {
+					if retT, handled, err := inf.inferTupleMethodCall(call, curT, s.Member, call.Args); err != nil {
+						return nil, err
+					} else if handled {
+						curT = retT
+						if inf.ExprTypes != nil {
+							inf.ExprTypes[call] = curT
+						}
+						i++
+						continue
+					}
+				}
+			}
+			curT, err = inf.inferMemberOnType(s, curT, s.Member)
+			if err != nil {
+				return nil, err
+			}
+		case *ast.MemberAccessExpr:
+			if i+1 < len(steps) {
+				if call, ok := steps[i+1].(*ast.CallExpr); ok && call.Callee == s {
+					if retT, handled, err := inf.inferTupleMethodCall(call, curT, s.Member, call.Args); err != nil {
+						return nil, err
+					} else if handled {
+						curT = retT
+						if inf.ExprTypes != nil {
+							inf.ExprTypes[call] = curT
+						}
+						i++
+						continue
+					}
+				}
+			}
+			curT, err = inf.inferMemberOnType(s, curT, s.Member)
+			if err != nil {
+				return nil, err
+			}
+		case *ast.SafeIndexExpr:
+			curT, err = narrowForSafe(s, curT)
+			if err != nil {
+				return nil, err
+			}
+			curT, err = inf.inferIndexOnType(s, curT, s.Index, "")
+			if err != nil {
+				return nil, err
+			}
+		case *ast.IndexExpr:
+			curT, err = inf.inferIndexOnType(s, curT, s.Index, s.TypeArg)
+			if err != nil {
+				return nil, err
+			}
+		case *ast.TypeInstExpr:
+			args := make([]Type, len(s.TypeArgs))
+			for j, aStr := range s.TypeArgs {
+				t, err := inf.parseTypeAnnot(aStr)
+				if err != nil {
+					return nil, err
+				}
+				args[j] = t
+			}
+			resT, handled, err := inf.instantiateExplicitTypeArgs(s, curT, args, false)
+			if err != nil {
+				return nil, err
+			}
+			if !handled {
+				return nil, inf.nodeErr(s, "cannot instantiate type arguments on %s", curT.String())
+			}
+			curT = resT
+		case *ast.SafeCallExpr:
+			curT, err = narrowForSafe(s, curT)
+			if err != nil {
+				return nil, err
+			}
+			curT, err = inf.inferCallWithCalleeType(s, s.Args, s.Block, curT)
+			if err != nil {
+				return nil, err
+			}
+		case *ast.CallExpr:
+			curT, err = inf.inferCallWithCalleeType(s, s.Args, s.Block, curT)
+			if err != nil {
+				return nil, err
+			}
+		case *ast.ForceExpr:
+			// Strict force does not change the static type.
+		}
+		if inf.ExprTypes != nil {
+			inf.ExprTypes[step] = curT
+		}
+	}
+
+	if len(shortTypes) == 0 {
+		return curT, nil
+	}
+	all := make([]Type, 0, len(shortTypes)+1)
+	all = append(all, curT)
+	all = append(all, shortTypes...)
+	return NewUnionType(all...), nil
 }
 
 func getFirstParamType(fnT *FuncType) (Type, bool) {

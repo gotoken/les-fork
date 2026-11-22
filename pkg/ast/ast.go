@@ -329,6 +329,111 @@ func (e *ElseExpr) node()         {}
 func (e *ElseExpr) expr()         {}
 func (e *ElseExpr) Pos() Position { return e.Position }
 
+// CoalesceExpr represents nil-coalescing expression: Left ?? Right.
+type CoalesceExpr struct {
+	Position Position
+	Left     Expr
+	Right    Expr
+}
+
+func (c *CoalesceExpr) node()         {}
+func (c *CoalesceExpr) expr()         {}
+func (c *CoalesceExpr) Pos() Position { return c.Position }
+
+// SafeMemberAccessExpr represents null/error-safe member access: Target?.Member.
+type SafeMemberAccessExpr struct {
+	Position Position
+	Target   Expr
+	Member   string
+}
+
+func (s *SafeMemberAccessExpr) node()         {}
+func (s *SafeMemberAccessExpr) expr()         {}
+func (s *SafeMemberAccessExpr) Pos() Position { return s.Position }
+
+// SafeIndexExpr represents null/error-safe indexing: Target?.[Index].
+type SafeIndexExpr struct {
+	Position Position
+	Target   Expr
+	Index    Expr
+}
+
+func (s *SafeIndexExpr) node()         {}
+func (s *SafeIndexExpr) expr()         {}
+func (s *SafeIndexExpr) Pos() Position { return s.Position }
+
+// SafeCallExpr represents null/error-safe invocation: Callee?.(Args) [Block].
+type SafeCallExpr struct {
+	Position Position
+	Callee   Expr
+	Args     []Expr
+	Block    *BlockLiteral // optional trailing do |x|: block
+}
+
+func (s *SafeCallExpr) node()         {}
+func (s *SafeCallExpr) expr()         {}
+func (s *SafeCallExpr) Pos() Position { return s.Position }
+
+// OptionalChainExpr wraps an unparenthesized postfix chain containing at least one
+// safe navigation operator ('?.', '?.[', or '?.(') so any Nil or Error receiver
+// aborts all subsequent postfix steps in the chain.
+type OptionalChainExpr struct {
+	Position        Position
+	Base            Expr // receiver expression evaluated normally prior to the first safe step
+	Expr            Expr // outermost postfix step node whose chain starts at Base
+	WrappedInParens bool // true when enclosed in (...) so outer postfix ops terminate this chain
+}
+
+func (o *OptionalChainExpr) node()         {}
+func (o *OptionalChainExpr) expr()         {}
+func (o *OptionalChainExpr) Pos() Position { return o.Position }
+
+// UnwindOptionalChain splits an OptionalChainExpr into its base receiver expression
+// and its ordered left-to-right slice of chained postfix step AST nodes starting after Base.
+func UnwindOptionalChain(chain *OptionalChainExpr) (Expr, []Expr) {
+	if chain == nil {
+		return nil, nil
+	}
+	var revSteps []Expr
+	cur := chain.Expr
+	for cur != nil && cur != chain.Base {
+		switch node := cur.(type) {
+		case *SafeMemberAccessExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Target
+		case *MemberAccessExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Target
+		case *SafeIndexExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Target
+		case *IndexExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Target
+		case *TypeInstExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Target
+		case *SafeCallExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Callee
+		case *CallExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Callee
+		case *ForceExpr:
+			revSteps = append(revSteps, node)
+			cur = node.Expr
+		default:
+			goto done
+		}
+	}
+done:
+	steps := make([]Expr, len(revSteps))
+	for i, s := range revSteps {
+		steps[len(revSteps)-1-i] = s
+	}
+	return chain.Base, steps
+}
+
 // CallExpr represents function call. Arg is always a TupleLit expression (or single expr desugared).
 type CallExpr struct {
 	Position        Position

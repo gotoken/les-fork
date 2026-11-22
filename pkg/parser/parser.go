@@ -24,6 +24,7 @@ const (
 	PREC_EQUALITY     // == !=
 	PREC_IS           // is
 	PREC_COMPARISON   // < <= > >=
+	PREC_COALESCE     // ??
 	PREC_BIT_OR       // |
 	PREC_BIT_XOR      // ^
 	PREC_BIT_AND      // &
@@ -1538,6 +1539,12 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 			return true
 		}
 		return e.ParenOmitted && len(e.Args) > 0 && exprEndsWithBlock(e.Args[len(e.Args)-1])
+	case *ast.SafeCallExpr:
+		return e.Block != nil
+	case *ast.OptionalChainExpr:
+		return !e.WrappedInParens && exprEndsWithBlock(e.Expr)
+	case *ast.CoalesceExpr:
+		return exprEndsWithBlock(e.Right)
 	case *ast.LambdaExpr:
 		return e.Expr == nil && !e.WrappedInParens
 	case *ast.ElseExpr:
@@ -1631,6 +1638,31 @@ func (p *Parser) parseExpr(precedence int) ast.Expr {
 				Args:         args,
 				Block:        block,
 				ParenOmitted: true,
+			}
+		} else if oc, isChain := prefix.(*ast.OptionalChainExpr); isChain && !oc.WrappedInParens {
+			_, isMem := oc.Expr.(*ast.MemberAccessExpr)
+			_, isSafeMem := oc.Expr.(*ast.SafeMemberAccessExpr)
+			if isMem || isSafeMem {
+				p.inParenOmissionCall = true
+				args := p.parseCallArgumentsWithoutParens()
+				p.inParenOmissionCall = false
+
+				var block *ast.BlockLiteral
+				if p.peekTokenIs(lexer.TokenDo) {
+					p.nextToken()
+					block = p.parseBlockLiteral()
+				}
+				prefix = &ast.OptionalChainExpr{
+					Position: oc.Position,
+					Base:     oc.Base,
+					Expr: &ast.CallExpr{
+						Position:     oc.Expr.Pos(),
+						Callee:       oc.Expr,
+						Args:         args,
+						Block:        block,
+						ParenOmitted: true,
+					},
+				}
 			}
 		}
 	}
@@ -1979,6 +2011,8 @@ func markWrappedInParens(expr ast.Expr) {
 		e.WrappedInParens = true
 	case *ast.ElseExpr:
 		e.WrappedInParens = true
+	case *ast.OptionalChainExpr:
+		e.WrappedInParens = true
 	}
 }
 
@@ -2101,8 +2135,8 @@ func (p *Parser) parseDict() ast.Expr {
 	return &ast.DictLit{Position: pos, Entries: entries}
 }
 
-func (p *Parser) peekPrecedence() int {
-	switch p.peekToken.Type {
+func tokenPrecedence(t lexer.TokenType) int {
+	switch t {
 	case lexer.TokenElse:
 		return PREC_ELSE
 	case lexer.TokenPipeGreater:
@@ -2119,6 +2153,8 @@ func (p *Parser) peekPrecedence() int {
 		return PREC_IS
 	case lexer.TokenLt, lexer.TokenLte, lexer.TokenGt, lexer.TokenGte:
 		return PREC_COMPARISON
+	case lexer.TokenQuestionQuestion:
+		return PREC_COALESCE
 	case lexer.TokenPipe:
 		return PREC_BIT_OR
 	case lexer.TokenCaret:
@@ -2135,7 +2171,7 @@ func (p *Parser) peekPrecedence() int {
 		return PREC_CALL
 	case lexer.TokenLBracket:
 		return PREC_INDEX
-	case lexer.TokenDot:
+	case lexer.TokenDot, lexer.TokenQuestionDot:
 		return PREC_DOT
 	case lexer.TokenColonColon:
 		return PREC_SCOPE
@@ -2146,48 +2182,36 @@ func (p *Parser) peekPrecedence() int {
 	}
 }
 
+func (p *Parser) peekPrecedence() int {
+	return tokenPrecedence(p.peekToken.Type)
+}
+
 func (p *Parser) curPrecedence() int {
-	switch p.curToken.Type {
-	case lexer.TokenElse:
-		return PREC_ELSE
-	case lexer.TokenPipeGreater:
-		return PREC_PIPE
-	case lexer.TokenQuestion:
-		return PREC_TERNARY
-	case lexer.TokenOr:
-		return PREC_LOGICAL_OR
-	case lexer.TokenAnd:
-		return PREC_LOGICAL_AND
-	case lexer.TokenEq, lexer.TokenNotEq, lexer.TokenRegexMatch:
-		return PREC_EQUALITY
-	case lexer.TokenIs:
-		return PREC_IS
-	case lexer.TokenLt, lexer.TokenLte, lexer.TokenGt, lexer.TokenGte:
-		return PREC_COMPARISON
-	case lexer.TokenPipe:
-		return PREC_BIT_OR
-	case lexer.TokenCaret:
-		return PREC_BIT_XOR
-	case lexer.TokenAmpersand:
-		return PREC_BIT_AND
-	case lexer.TokenLShift, lexer.TokenRShift:
-		return PREC_SHIFT
-	case lexer.TokenPlus, lexer.TokenMinus:
-		return PREC_SUM
-	case lexer.TokenStar, lexer.TokenSlash, lexer.TokenPercent:
-		return PREC_PRODUCT
-	case lexer.TokenLParen:
-		return PREC_CALL
-	case lexer.TokenLBracket:
-		return PREC_INDEX
-	case lexer.TokenDot:
-		return PREC_DOT
-	case lexer.TokenColonColon:
-		return PREC_SCOPE
-	case lexer.TokenNot:
-		return PREC_POSTFIX
-	default:
-		return PREC_LOWEST
+	return tokenPrecedence(p.curToken.Type)
+}
+
+func unwrapOptionalChain(left ast.Expr) (ast.Expr, *ast.OptionalChainExpr) {
+	if oc, ok := left.(*ast.OptionalChainExpr); ok && !oc.WrappedInParens {
+		return oc.Expr, oc
+	}
+	return left, nil
+}
+
+func rewrapOptionalChain(node, base ast.Expr, chain *ast.OptionalChainExpr, pos ast.Position) ast.Expr {
+	if node == nil {
+		return nil
+	}
+	if chain != nil {
+		return &ast.OptionalChainExpr{
+			Position: chain.Position,
+			Base:     chain.Base,
+			Expr:     node,
+		}
+	}
+	return &ast.OptionalChainExpr{
+		Position: pos,
+		Base:     base,
+		Expr:     node,
 	}
 }
 
@@ -2215,7 +2239,60 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 			Module:   ident.Name,
 			Member:   memberName,
 		}
+	case lexer.TokenQuestionDot:
+		inner, chain := unwrapOptionalChain(left)
+		var step ast.Expr
+		switch p.peekToken.Type {
+		case lexer.TokenLParen:
+			p.nextToken() // advance to '('
+			args := p.parseCallArguments()
+			var block *ast.BlockLiteral
+			if p.peekTokenIs(lexer.TokenDo) {
+				p.nextToken()
+				block = p.parseBlockLiteral()
+			}
+			step = &ast.SafeCallExpr{
+				Position: pos,
+				Callee:   inner,
+				Args:     args,
+				Block:    block,
+			}
+		case lexer.TokenLBracket:
+			p.nextToken() // advance to '['
+			p.nextToken() // consume '['
+			if p.curTokenIs(lexer.TokenRBracket) {
+				p.addError(p.curToken.Line, p.curToken.Col, "bracket expression cannot be empty")
+				return nil
+			}
+			idx := p.parseExpr(PREC_LOWEST)
+			if !p.expectPeek(lexer.TokenRBracket) {
+				return nil
+			}
+			step = &ast.SafeIndexExpr{
+				Position: pos,
+				Target:   inner,
+				Index:    idx,
+			}
+		default:
+			p.nextToken() // consume '?.'
+			var member string
+			if p.curTokenIs(lexer.TokenIdent) {
+				member = p.curToken.Literal
+			} else if isOperatorMethodToken(p.curToken.Type) {
+				member = p.parseOperatorMethodName()
+			} else {
+				p.addError(p.curToken.Line, p.curToken.Col, "expected identifier, '(', or '[' after '?.', got %s", lexer.FormatToken(p.curToken))
+				return nil
+			}
+			step = &ast.SafeMemberAccessExpr{
+				Position: pos,
+				Target:   inner,
+				Member:   member,
+			}
+		}
+		return rewrapOptionalChain(step, inner, chain, pos)
 	case lexer.TokenDot:
+		inner, chain := unwrapOptionalChain(left)
 		p.nextToken() // consume '.'
 		var member string
 		if p.curTokenIs(lexer.TokenIdent) {
@@ -2226,10 +2303,23 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 			p.addError(p.curToken.Line, p.curToken.Col, "expected identifier after '.', got %s", lexer.FormatToken(p.curToken))
 			return nil
 		}
-		return &ast.MemberAccessExpr{
+		node := &ast.MemberAccessExpr{
 			Position: pos,
-			Target:   left,
+			Target:   inner,
 			Member:   member,
+		}
+		if chain != nil {
+			return rewrapOptionalChain(node, inner, chain, pos)
+		}
+		return node
+	case lexer.TokenQuestionQuestion:
+		prec := p.curPrecedence()
+		p.nextToken()
+		right := p.parseExpr(prec)
+		return &ast.CoalesceExpr{
+			Position: pos,
+			Left:     left,
+			Right:    right,
 		}
 	case lexer.TokenQuestion:
 		// cond ? then : else
@@ -2309,20 +2399,26 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 		}
 	case lexer.TokenLParen:
 		// f(a, b)
+		inner, chain := unwrapOptionalChain(left)
 		args := p.parseCallArguments()
 		var block *ast.BlockLiteral
 		if p.peekTokenIs(lexer.TokenDo) {
 			p.nextToken()
 			block = p.parseBlockLiteral()
 		}
-		return &ast.CallExpr{
+		node := &ast.CallExpr{
 			Position: pos,
-			Callee:   left,
+			Callee:   inner,
 			Args:     args,
 			Block:    block,
 		}
+		if chain != nil {
+			return rewrapOptionalChain(node, inner, chain, pos)
+		}
+		return node
 	case lexer.TokenLBracket:
 		// target[index] or target[TypeArgs...]
+		inner, chain := unwrapOptionalChain(left)
 		rest := p.peekToken.Literal + " " + p.l.PeekRestOfLine()
 		isArrow := hasArrowBeforeRBracket(rest)
 		p.nextToken() // consume '['
@@ -2348,11 +2444,15 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 			if !p.expectPeek(lexer.TokenRBracket) {
 				return nil
 			}
-			return &ast.TypeInstExpr{
+			node := &ast.TypeInstExpr{
 				Position: pos,
-				Target:   left,
+				Target:   inner,
 				TypeArgs: typeArgs,
 			}
+			if chain != nil {
+				return rewrapOptionalChain(node, inner, chain, pos)
+			}
+			return node
 		}
 		idx := p.parseExpr(PREC_LOWEST)
 		if p.peekTokenIs(lexer.TokenComma) {
@@ -2374,22 +2474,30 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 			if !p.expectPeek(lexer.TokenRBracket) {
 				return nil
 			}
-			return &ast.TypeInstExpr{
+			node := &ast.TypeInstExpr{
 				Position: pos,
-				Target:   left,
+				Target:   inner,
 				TypeArgs: typeArgs,
 			}
+			if chain != nil {
+				return rewrapOptionalChain(node, inner, chain, pos)
+			}
+			return node
 		}
 		if !p.expectPeek(lexer.TokenRBracket) {
 			return nil
 		}
 		typeArg := exprToTypeAnnot(idx)
-		return &ast.IndexExpr{
+		node := &ast.IndexExpr{
 			Position: pos,
-			Target:   left,
+			Target:   inner,
 			Index:    idx,
 			TypeArg:  typeArg,
 		}
+		if chain != nil {
+			return rewrapOptionalChain(node, inner, chain, pos)
+		}
+		return node
 	case lexer.TokenPipeGreater:
 		// left |> right => right(left)
 		prec := p.curPrecedence()
@@ -2456,6 +2564,38 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 				Block:    call.Block,
 			}
 		}
+		if oc, isChain := right.(*ast.OptionalChainExpr); isChain && !oc.WrappedInParens {
+			var piped ast.Expr
+			switch inner := oc.Expr.(type) {
+			case *ast.CallExpr:
+				newArgs := make([]ast.Expr, 0, len(inner.Args)+1)
+				newArgs = append(newArgs, left)
+				newArgs = append(newArgs, inner.Args...)
+				piped = &ast.CallExpr{
+					Position: pos,
+					Callee:   inner.Callee,
+					Args:     newArgs,
+					Block:    inner.Block,
+				}
+			case *ast.SafeCallExpr:
+				newArgs := make([]ast.Expr, 0, len(inner.Args)+1)
+				newArgs = append(newArgs, left)
+				newArgs = append(newArgs, inner.Args...)
+				piped = &ast.SafeCallExpr{
+					Position: pos,
+					Callee:   inner.Callee,
+					Args:     newArgs,
+					Block:    inner.Block,
+				}
+			default:
+				piped = &ast.CallExpr{
+					Position: pos,
+					Callee:   oc.Expr,
+					Args:     []ast.Expr{left},
+				}
+			}
+			return rewrapOptionalChain(piped, oc.Base, oc, pos)
+		}
 		return &ast.CallExpr{
 			Position: pos,
 			Callee:   right,
@@ -2465,10 +2605,15 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 		return p.parseElseExpr(left)
 	case lexer.TokenNot:
 		// expr! (postfix force)
-		return &ast.ForceExpr{
+		inner, chain := unwrapOptionalChain(left)
+		node := &ast.ForceExpr{
 			Position: pos,
-			Expr:     left,
+			Expr:     inner,
 		}
+		if chain != nil {
+			return rewrapOptionalChain(node, inner, chain, pos)
+		}
+		return node
 	default:
 		return left
 	}

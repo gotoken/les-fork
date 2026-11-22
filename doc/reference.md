@@ -210,6 +210,8 @@ Primitive types provide predefined instance methods, indexing mechanisms, length
   - `nil.Inspect(): String`: Returns `"nil"`. Satisfies `interface Show`.
 - **Operators**:
   - Comparison: `==`, `!=` (commonly used for nullable union types, e.g. `val == nil` or `val is Nil`).
+  - Null/Error-safe navigation: `expr?.Member`, `expr?.[idx]`, `expr?.(args)` (short-circuits subsequent chained postfix steps when the receiver is `Nil` or `Error`).
+  - Nil coalescing: `lhs ?? rhs` (evaluates `rhs` only when `lhs` is `Nil`; non-`Nil` values including `Error` pass through unchanged).
 
 ### `Bytes`
 - **Methods**:
