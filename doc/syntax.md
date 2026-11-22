@@ -263,9 +263,9 @@ Listed from highest to lowest precedence:
 
 | Precedence | Operator | Syntax / Example | Types | Description |
 |---|---|---|---|---|
-| 1 (Highest) | `.` | `p.x`, `p.dist()` | `StructInstance` | Member / method access (with promotion) |
-| 1 | `[]` | `s[0]`, `t[1]`, `d["k"]` | `String`, `Tuple`, `Dict` | Indexing (0-based rune for String, negative indices supported) |
-| 1 | `()` | `f(a, b)` | Function / Struct | Function call or struct constructor |
+| 1 (Highest) | `.`, `?.` | `p.x`, `p?.x`, `p?.Port()` | `StructInstance`, `T \| Nil \| Error` | Member / method access (with promotion); `?.` short-circuits on `Nil \| Error` |
+| 1 | `[]`, `?.[]` | `s[0]`, `t?.[1]`, `d?.["k"]` | `String`, `Tuple`, `Dict`, `Match` | Indexing; `?.[]` short-circuits on `Nil \| Error` |
+| 1 | `()`, `?.()` | `f(a, b)`, `cb?.(a)` | Function / Struct | Function call or struct constructor; `?.()` short-circuits on `Nil \| Error` |
 | 1 | `!` (postfix) | `expr!` | | Explicit demand point (postfix sugar for `force expr`) |
 | 1 | `force` (prefix) | `force expr` | | Explicit demand point (strict evaluation) |
 | 2 | `+`, `-`, `!`, `~` | `+x`, `-x`, `!flag`, `~mask` | `Int`/`Float` (`+`, `-`), `Bool` (`!`), `Int` (`~`) | Unary plus, negation, logical NOT, and bitwise NOT |
@@ -275,15 +275,16 @@ Listed from highest to lowest precedence:
 | 6 | `&` | `a & b` | `Int` | Bitwise AND |
 | 7 | `^` | `a ^ b` | `Int` | Bitwise XOR |
 | 8 | `\|` | `a \| b` | `Int` | Bitwise OR |
-| 9 | `<`, `<=`, `>`, `>=` | `a < b`, `a >= b` | `Int`, `Float`, `String`, `Bytes` | Relational comparisons |
-| 10 | `is` | `x is Int`, `p is Reader` | | Dynamic type / interface satisfaction test |
-| 11 | `==`, `!=`, `=~` | `a == b`, `s =~ /pat/` | Any, `String`/`Regex` | Equality / inequality comparison, pattern match |
-| 12 | `&&` | `cond1 && cond2` | `Bool` | Short-circuit logical AND |
-| 13 | `\|\|` | `cond1 \|\| cond2` | `Bool` | Short-circuit logical OR |
-| 14 | `? :` | `cond ? a : b` | `Bool` (cond) | Inline ternary conditional |
-| 15 | `\|>` | `x \|> f` | Any | Pipeline operator |
-| 16 | `else` | `expr else fallback`, `expr else \|e\|: return e` | `Error`-capable | `Error`-only fallback / early-exit handler (right-associative) |
-| 17 (Lowest) | *(space)* | `print x * 2 + 1` | Callable | Paren-omitted function call (weakest binding) |
+| 9 | `??` | `expr ?? fallback` | `T \| Nil` | Nil-coalescing operator: evaluates `fallback` only when `expr` is `Nil` (passes `Error` through) |
+| 10 | `<`, `<=`, `>`, `>=` | `a < b`, `a >= b` | `Int`, `Float`, `String`, `Bytes` | Relational comparisons |
+| 11 | `is` | `x is Int`, `p is Reader` | | Dynamic type / interface satisfaction test |
+| 12 | `==`, `!=`, `=~` | `a == b`, `s =~ /pat/` | Any, `String`/`Regex` | Equality / inequality comparison, pattern match |
+| 13 | `&&` | `cond1 && cond2` | `Bool` | Short-circuit logical AND |
+| 14 | `\|\|` | `cond1 \|\| cond2` | `Bool` | Short-circuit logical OR |
+| 15 | `? :` | `cond ? a : b` | `Bool` (cond) | Inline ternary conditional |
+| 16 | `\|>` | `x \|> f` | Any | Pipeline operator |
+| 17 | `else` | `expr else fallback`, `expr else \|e\|: return e` | `Error`-capable | `Error`-only fallback / early-exit handler (right-associative) |
+| 18 (Lowest) | *(space)* | `print x * 2 + 1` | Callable | Paren-omitted function call (weakest binding) |
 
 #### Bitwise Operators (`~`, `&`, `^`, `|`, `<<`, `>>`)
 Les provides comprehensive bitwise operators operating on arbitrary-precision integers (`Int`):
@@ -884,3 +885,27 @@ To avoid deeply nested `match` branches when propagating or recovering from `Err
   - `else` eagerly forces its left-hand expression at the point of evaluation so early `return`, `break`, or `continue` executes deterministically in source order rather than being deferred inside a lazy thunk.
   - Inside closures, `return` inside `else` follows Les's standard non-local `return` rule (exiting the enclosing `def`). To return the `Error` from a closure itself, yield `err` as the fallback value (`else |err|: err`).
   - To pass a bare lambda literal as a non-binding fallback value, wrap it in parentheses so `|...|:` is not parsed as an error binder: `get_fn() else (|x|: x + 1)`.
+
+### Null-Safe Navigation (`?.`, `?.[`, `?.(`) and Coalescing (`??`)
+Les provides short-circuiting safe navigation and `Nil`-coalescing operators that compose directly with `else` error handling:
+
+- **Null/Error-Safe Navigation (`?.`, `?.[idx]`, `?.(args)`)**:
+  - Forces and inspects the receiver. If it evaluates to `Nil` **or** any `Error`-implementing value, subsequent unparenthesized postfix steps in the chain (`.`, `?.`, `?.[`, `?.(`, `()`, `[]`, `!`, including call arguments and index expressions) are immediately aborted and that `Nil` or `Error` value is returned.
+  - Statically removes `Nil` and `Error` members at each `?.` / `?.[ ` / `?.(` step, preserving only the short-circuit types that the receiver can actually produce (`Config | Error` yields `R | Error` without phantom `Nil`).
+  - Parentheses bound the short-circuiting chain: `(a?.b).Type()` evaluates `.Type()` on the resulting `B | Nil | Error` value rather than short-circuiting.
+  - Note: Safe indexing uses `?.[` and safe invocation uses `?.(` (rather than `?[` or `?(`) to avoid ambiguity with ternary expressions such as `cond?[1]:[2]` or `cond?(1):(2)`.
+- **Nil-Coalescing Operator (`??`)**:
+  - `lhs ?? rhs` forces `lhs` and returns `lhs` immediately unless it evaluates to `nil`, in which case `rhs` is evaluated and returned.
+  - Non-`Nil` values — including `Error` values, `0`, `false`, and `""` — pass through unchanged without evaluating `rhs`.
+  - Statically strips `Nil` from the left-hand union type while keeping all other members (including `Error`):
+    ```python
+    # load_config() -> Config | Error, Config.Port() -> Int | Nil
+    def resolve_port() -> Int | Error:
+        # `?.Port()` yields `Int | Nil | Error`; `?? 8080` narrows to `Int | Error`;
+        # `else |err|: return err` narrows `port` to `Int`.
+        port = load_config()?.Port() ?? 8080 else |err|: return err
+        port
+    ```
+- **Precedence & Redundancy Warnings**:
+  - `??` binds tighter than comparisons (`==`, `<`, `is`) and logical operators (`&&`, `||`) and looser than arithmetic/bitwise (`+`, `|`), so `x ?? 0 == 0` parses as `(x ?? 0) == 0` and `a ?? b + 1` parses as `a ?? (b + 1)`.
+  - Applying `??` to a non-`Nil` type or `?.` / `?.[ ` / `?.(` to a non-`Nil`/non-`Error` concrete type emits a `Type Warning` and passes through without adding `Nil` or `Error`; applying a null-safe operator to an always-`Nil` or always-`Error` receiver is a static type error.

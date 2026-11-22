@@ -40,23 +40,25 @@ const (
 	TokenForce
 
 	// Punctuation
-	TokenAssign      // =
-	TokenColon       // :
-	TokenColonColon  // ::
-	TokenSemicolon   // ;
-	TokenComma       // ,
-	TokenDot         // .
-	TokenAt          // @
-	TokenQuestion    // ?
-	TokenPipe        // |
-	TokenPipeGreater // |>
-	TokenArrow       // ->
-	TokenLParen      // (
-	TokenRParen      // )
-	TokenLBracket    // [
-	TokenRBracket    // ]
-	TokenLBrace      // {
-	TokenRBrace      // }
+	TokenAssign           // =
+	TokenColon            // :
+	TokenColonColon       // ::
+	TokenSemicolon        // ;
+	TokenComma            // ,
+	TokenDot              // .
+	TokenAt               // @
+	TokenQuestion         // ?
+	TokenQuestionDot      // ?.
+	TokenQuestionQuestion // ??
+	TokenPipe             // |
+	TokenPipeGreater      // |>
+	TokenArrow            // ->
+	TokenLParen           // (
+	TokenRParen           // )
+	TokenLBracket         // [
+	TokenRBracket         // ]
+	TokenLBrace           // {
+	TokenRBrace           // }
 
 	// Operators
 	TokenPlus       // +
@@ -163,6 +165,10 @@ func (t TokenType) String() string {
 		return "'@'"
 	case TokenQuestion:
 		return "'?'"
+	case TokenQuestionDot:
+		return "'?.'"
+	case TokenQuestionQuestion:
+		return "'??'"
 	case TokenPipe:
 		return "'|'"
 	case TokenPipeGreater:

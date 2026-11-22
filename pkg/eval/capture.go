@@ -123,6 +123,8 @@ func (c *nameCollector) expr(expr ast.Expr) {
 		c.add(e.Name)
 	case *ast.MemberAccessExpr:
 		c.expr(e.Target)
+	case *ast.SafeMemberAccessExpr:
+		c.expr(e.Target)
 	case *ast.NamedArgExpr:
 		c.expr(e.Value)
 	case *ast.TupleLit:
@@ -139,9 +141,15 @@ func (c *nameCollector) expr(expr ast.Expr) {
 	case *ast.IndexExpr:
 		c.expr(e.Target)
 		c.expr(e.Index)
+	case *ast.SafeIndexExpr:
+		c.expr(e.Target)
+		c.expr(e.Index)
 	case *ast.TypeInstExpr:
 		c.expr(e.Target)
 	case *ast.BinaryExpr:
+		c.expr(e.Left)
+		c.expr(e.Right)
+	case *ast.CoalesceExpr:
 		c.expr(e.Left)
 		c.expr(e.Right)
 	case *ast.UnaryExpr:
@@ -170,6 +178,16 @@ func (c *nameCollector) expr(expr ast.Expr) {
 		if e.Block != nil {
 			c.expr(e.Block)
 		}
+	case *ast.SafeCallExpr:
+		c.expr(e.Callee)
+		for _, a := range e.Args {
+			c.expr(a)
+		}
+		if e.Block != nil {
+			c.expr(e.Block)
+		}
+	case *ast.OptionalChainExpr:
+		c.expr(e.Expr)
 	case *ast.BlockLiteral:
 		c.params(e.Params)
 		c.stmts(e.Body)

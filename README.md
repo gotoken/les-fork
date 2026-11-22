@@ -162,11 +162,6 @@ les - arg1 arg2 < script.les
   - `"User: #{name}, Age: #{age}\n"` evaluates embedded expressions via `Inspect()` (`interface Show`).
   - Single-quoted strings (`'...'`) remain literal without interpolation.
 
-### 3. Null-Safe Navigation (`?.`) & Coalescing Operator (`??`)
-- Syntactic sugar for handling `Nil` and nullable union types (`Type | Nil`):
-  - Safe navigation: `user?.Profile?.Name` (safely yields `nil` if intermediate receiver is `nil`).
-  - Null coalescing: `user?.Name ?? "Guest"` (provides fallback expression when operand is `nil`).
-
 ---
 
 ## License

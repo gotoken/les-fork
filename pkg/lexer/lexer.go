@@ -402,6 +402,16 @@ func (l *Lexer) nextTokenInternal() Token {
 				l.advance()
 				l.advance()
 				return t
+			case "?.":
+				t := Token{Type: TokenQuestionDot, Literal: "?.", Line: l.line, Col: l.col}
+				l.advance()
+				l.advance()
+				return t
+			case "??":
+				t := Token{Type: TokenQuestionQuestion, Literal: "??", Line: l.line, Col: l.col}
+				l.advance()
+				l.advance()
+				return t
 			}
 		}
 

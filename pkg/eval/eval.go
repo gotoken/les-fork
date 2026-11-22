@@ -1449,7 +1449,7 @@ func hasTopLevelUnionOrArrow(annot string) bool {
 // arguments, as type annotation strings. Type parameters and Self occurring
 // in them are resolved against env; whatever stays unresolved becomes
 // "Unknown". It returns nil when no inferred type arguments are recorded.
-func (env *Environment) inferredCallTypeArgs(call *ast.CallExpr, n int) []string {
+func (env *Environment) inferredCallTypeArgs(call ast.Expr, n int) []string {
 	if env == nil || env.Inferencer == nil {
 		return nil
 	}
@@ -1579,6 +1579,8 @@ func containsImmediateElseExpr(expr ast.Expr) bool {
 		return containsImmediateElseExpr(e.Expr)
 	case *ast.MemberAccessExpr:
 		return containsImmediateElseExpr(e.Target)
+	case *ast.SafeMemberAccessExpr:
+		return containsImmediateElseExpr(e.Target)
 	case *ast.NamedArgExpr:
 		return containsImmediateElseExpr(e.Value)
 	case *ast.TupleLit:
@@ -1599,9 +1601,13 @@ func containsImmediateElseExpr(expr ast.Expr) bool {
 		return false
 	case *ast.IndexExpr:
 		return containsImmediateElseExpr(e.Target) || containsImmediateElseExpr(e.Index)
+	case *ast.SafeIndexExpr:
+		return containsImmediateElseExpr(e.Target) || containsImmediateElseExpr(e.Index)
 	case *ast.TypeInstExpr:
 		return containsImmediateElseExpr(e.Target)
 	case *ast.BinaryExpr:
+		return containsImmediateElseExpr(e.Left) || containsImmediateElseExpr(e.Right)
+	case *ast.CoalesceExpr:
 		return containsImmediateElseExpr(e.Left) || containsImmediateElseExpr(e.Right)
 	case *ast.UnaryExpr:
 		return containsImmediateElseExpr(e.Expr)
@@ -1629,6 +1635,18 @@ func containsImmediateElseExpr(expr ast.Expr) bool {
 			}
 		}
 		return false
+	case *ast.SafeCallExpr:
+		if containsImmediateElseExpr(e.Callee) {
+			return true
+		}
+		for _, a := range e.Args {
+			if containsImmediateElseExpr(a) {
+				return true
+			}
+		}
+		return false
+	case *ast.OptionalChainExpr:
+		return containsImmediateElseExpr(e.Expr)
 	case *ast.LambdaExpr, *ast.BlockLiteral:
 		// Closure boundaries defer execution until invoked.
 		return false
@@ -2575,119 +2593,8 @@ func (env *Environment) evalExpr(expr ast.Expr) (Value, error) {
 		return specializeGenericValue(targetVal, e.TypeArgs, env)
 
 	case *ast.IndexExpr:
-		if e.TypeArg != "" {
-			targetVal := Force(NewThunk(e.Target, env))
-			switch targetVal.(type) {
-			case *StructDefValue, *Closure, *InterfaceDefValue, *BuiltinFunc:
-				return specializeGenericValue(targetVal, []string{e.TypeArg}, env)
-			}
-		}
 		targetVal := Force(NewThunk(e.Target, env))
-		idxVal := Force(NewThunk(e.Index, env))
-
-		if si, ok := targetVal.(*StructInstance); ok {
-			if fn, err := si.LookupMethod("[]", 1); err == nil {
-				return fn.Env.invokeClosure(fn, []Value{idxVal})
-			}
-			if m, err := si.LookupMember("[]"); err == nil {
-				forced := Force(m)
-				if fn, ok := forced.(*Closure); ok {
-					return fn.Env.invokeClosure(fn, []Value{idxVal})
-				}
-				if bf, ok := forced.(*BuiltinFunc); ok {
-					return bf.Fn([]Value{idxVal})
-				}
-			}
-		}
-
-		switch t := targetVal.(type) {
-		case *TupleValue:
-			i, ok := idxVal.(IntValue)
-			if !ok {
-				return nil, fmt.Errorf("tuple index must be Int, got %v", idxVal)
-			}
-			idx, ok := i.ToInt()
-			if !ok {
-				return nil, fmt.Errorf("tuple index out of bounds: %s (len %d)", i.String(), len(t.Elements))
-			}
-			if idx < 0 {
-				if t.IsVariadic {
-					return nil, fmt.Errorf("cannot use negative index on infinite tuple: %s", i.String())
-				}
-				idx = len(t.Elements) + idx
-			}
-			if idx < 0 || idx >= len(t.Elements) {
-				if t.IsVariadic && len(t.Elements) > 0 && idx >= len(t.Elements) {
-					return t.Elements[len(t.Elements)-1], nil
-				}
-				return nil, fmt.Errorf("tuple index out of bounds: %s (len %d)", i.String(), len(t.Elements))
-			}
-			return t.Elements[idx], nil
-		case StringValue:
-			i, ok := idxVal.(IntValue)
-			if !ok {
-				return nil, fmt.Errorf("string index must be Int, got %v", idxVal)
-			}
-			runes := []rune(string(t))
-			idx, ok := i.ToInt()
-			if !ok {
-				return nil, fmt.Errorf("string index out of bounds: %s (len %d)", i.String(), len(runes))
-			}
-			if idx < 0 {
-				idx = len(runes) + idx
-			}
-			if idx < 0 || idx >= len(runes) {
-				return nil, fmt.Errorf("string index out of bounds: %s (len %d)", i.String(), len(runes))
-			}
-			return StringValue(string(runes[idx])), nil
-		case BytesValue:
-			i, ok := idxVal.(IntValue)
-			if !ok {
-				return nil, fmt.Errorf("bytes index must be Int, got %v", idxVal)
-			}
-			data := []byte(t)
-			idx, ok := i.ToInt()
-			if !ok {
-				return nil, fmt.Errorf("bytes index out of bounds: %s (len %d)", i.String(), len(data))
-			}
-			if idx < 0 {
-				idx = len(data) + idx
-			}
-			if idx < 0 || idx >= len(data) {
-				return nil, fmt.Errorf("bytes index out of bounds: %s (len %d)", i.String(), len(data))
-			}
-			return NewIntValue(int64(data[idx])), nil
-		case *DictValue:
-			dk := MakeDictKey(idxVal)
-			if v, ok := t.Entries[dk]; ok {
-				return v, nil
-			}
-			return nil, fmt.Errorf("key not found in dict: %s", idxVal.String())
-		case *MatchValue:
-			if iv, ok := idxVal.(IntValue); ok {
-				idx, ok := iv.ToInt()
-				if !ok {
-					return nil, fmt.Errorf("match group index out of bounds: %s (len %d)", iv.String(), len(t.Groups))
-				}
-				if idx < 0 {
-					idx = len(t.Groups) + idx
-				}
-				if idx < 0 || idx >= len(t.Groups) {
-					return nil, fmt.Errorf("match group index out of bounds: %d (len %d)", idx, len(t.Groups))
-				}
-				return t.Groups[idx], nil
-			}
-			if sv, ok := idxVal.(StringValue); ok {
-				v, ok := t.Names[string(sv)]
-				if !ok {
-					return nil, fmt.Errorf("unknown capture group name: %s", string(sv))
-				}
-				return v, nil
-			}
-			return nil, fmt.Errorf("match index must be Int or String, got %s", typeNameOf(idxVal))
-		default:
-			return nil, fmt.Errorf("cannot index non-tuple/non-string/non-bytes/non-dict value: %v", targetVal)
-		}
+		return env.evalIndexOnValue(targetVal, e.Index, e.TypeArg)
 
 	case *ast.BinaryExpr:
 		if e.Op == "&&" {
@@ -2806,122 +2713,11 @@ func (env *Environment) evalExpr(expr ast.Expr) (Value, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		// Prepare argument thunks (pass-by-need) unless force-demanded or constant literal
-		argValues := make([]Value, len(e.Args))
-		for i, a := range e.Args {
-			if env.isForceDemand(a) {
-				argValues[i] = env.forceExpr(a)
-			} else if val, ok := evalLiteral(a); ok {
-				argValues[i] = val
-			} else {
-				argValues[i] = env.newThunk(a)
-			}
-		}
-
-		// Trailing block closure
-		var blockClosure *Closure
-		if e.Block != nil {
-			blockClosure = &Closure{
-				Params:          e.Block.Params,
-				Body:            e.Block.Body,
-				Env:             env,
-				IsFuncDef:       false,
-				EnclosingFuncID: env.EnclosingFuncID,
-			}
-			if env != nil && env.Inferencer != nil {
-				if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.ExprTypes != nil {
-					if fnType, ok := inf.ExprTypes[e.Block]; ok {
-						blockClosure.FuncType = fnType
-					}
-				}
-			}
-		}
-
-		switch fn := calleeVal.(type) {
-		case *BuiltinFunc:
-			if blockClosure != nil {
-				argValues = append(argValues, blockClosure)
-			}
-			return fn.Fn(argValues)
-
-		case *Closure:
-			// A generic function called without explicit type arguments gets
-			// the type arguments the type checker inferred for this call.
-			if len(fn.TypeParams) > 0 && len(fn.TypeArgs) == 0 {
-				if typeArgs := env.inferredCallTypeArgs(e, len(fn.TypeParams)); typeArgs != nil {
-					specialized := *fn
-					specialized.TypeArgs = typeArgs
-					fn = &specialized
-				}
-			}
-			if fn.BlockParam != nil {
-				if blockClosure != nil {
-					return env.invokeClosure(fn, argValues, blockClosure)
-				}
-				return env.invokeClosure(fn, argValues)
-			}
-			if blockClosure != nil {
-				argValues = append(argValues, blockClosure)
-			}
-			return env.invokeClosure(fn, argValues)
-
-		case *StructDefValue:
-			targetDef := fn
-			if len(targetDef.TypeArgs) == 0 && len(targetDef.TypeParams) > 0 && env != nil && env.Inferencer != nil {
-				if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.ExprTypes != nil {
-					if callT, ok := inf.ExprTypes[e]; ok {
-						if st, ok := callT.(*types.StructType); ok && len(st.TypeArgs) == len(targetDef.TypeParams) {
-							typeArgs := make([]string, len(st.TypeArgs))
-							allKnown := true
-							for i, a := range st.TypeArgs {
-								resolvedA := a
-								if types.ContainsSelfOrParam(resolvedA) {
-									resolvedA = resolveTypeParamFromEnv(resolvedA, env, inf)
-								}
-								if resolvedA == nil || resolvedA == types.TypeUnknown || types.ContainsSelfOrParam(resolvedA) {
-									allKnown = false
-									break
-								}
-								typeArgs[i] = resolvedA.String()
-							}
-							if allKnown {
-								if sp, err := specializeGenericValue(targetDef, typeArgs, env); err == nil {
-									if spDef, ok := sp.(*StructDefValue); ok {
-										targetDef = spDef
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-			return env.instantiateStruct(targetDef, e.Args)
-
-		default:
-			return nil, fmt.Errorf("cannot call non-function value: %v", calleeVal)
-		}
+		return env.evalCallWithCalleeValue(e, e.Args, e.Block, calleeVal)
 
 	case *ast.MemberAccessExpr:
 		targetVal := Force(NewThunk(e.Target, env))
-		if si, ok := targetVal.(*StructInstance); ok {
-			memVal, err := si.LookupMember(e.Member)
-			if err == nil {
-				if closure, ok := memVal.(*Closure); ok && closure.FuncType == nil {
-					if si.Def != nil && si.Def.StructType != nil {
-						if st, ok := si.Def.StructType.(*types.StructType); ok {
-							if mType, err := st.LookupMember(e.Member); err == nil {
-								if ft, isFT := mType.(*types.FuncType); isFT {
-									closure.FuncType = ft
-								}
-							}
-						}
-					}
-				}
-			}
-			return memVal, err
-		}
-		return lookupBuiltinMember(targetVal, e.Member)
+		return evalMemberOnValue(targetVal, e.Member)
 
 	case *ast.NamedArgExpr:
 		return env.evalExpr(e.Value)
@@ -3055,9 +2851,310 @@ func (env *Environment) evalExpr(expr ast.Expr) (Value, error) {
 		}
 		return val, nil
 
+	case *ast.CoalesceExpr:
+		v, err := env.evalExpr(e.Left)
+		if err != nil {
+			return nil, err
+		}
+		leftVal := Force(v)
+		if _, isNil := leftVal.(NilValue); isNil {
+			return env.evalExpr(e.Right)
+		}
+		return leftVal, nil
+
+	case *ast.OptionalChainExpr:
+		return env.evalOptionalChainExpr(e)
+
 	default:
 		return nil, fmt.Errorf("unknown expression: %T", expr)
 	}
+}
+
+func evalMemberOnValue(targetVal Value, member string) (Value, error) {
+	if si, ok := targetVal.(*StructInstance); ok {
+		memVal, err := si.LookupMember(member)
+		if err == nil {
+			if closure, ok := memVal.(*Closure); ok && closure.FuncType == nil {
+				if si.Def != nil && si.Def.StructType != nil {
+					if st, ok := si.Def.StructType.(*types.StructType); ok {
+						if mType, err := st.LookupMember(member); err == nil {
+							if ft, isFT := mType.(*types.FuncType); isFT {
+								closure.FuncType = ft
+							}
+						}
+					}
+				}
+			}
+		}
+		return memVal, err
+	}
+	return lookupBuiltinMember(targetVal, member)
+}
+
+func (env *Environment) evalIndexOnValue(targetVal Value, idxExpr ast.Expr, typeArg string) (Value, error) {
+	if typeArg != "" {
+		switch targetVal.(type) {
+		case *StructDefValue, *Closure, *InterfaceDefValue, *BuiltinFunc:
+			return specializeGenericValue(targetVal, []string{typeArg}, env)
+		}
+	}
+	idxVal := Force(NewThunk(idxExpr, env))
+
+	if si, ok := targetVal.(*StructInstance); ok {
+		if fn, err := si.LookupMethod("[]", 1); err == nil {
+			return fn.Env.invokeClosure(fn, []Value{idxVal})
+		}
+		if m, err := si.LookupMember("[]"); err == nil {
+			forced := Force(m)
+			if fn, ok := forced.(*Closure); ok {
+				return fn.Env.invokeClosure(fn, []Value{idxVal})
+			}
+			if bf, ok := forced.(*BuiltinFunc); ok {
+				return bf.Fn([]Value{idxVal})
+			}
+		}
+	}
+
+	switch t := targetVal.(type) {
+	case *TupleValue:
+		i, ok := idxVal.(IntValue)
+		if !ok {
+			return nil, fmt.Errorf("tuple index must be Int, got %v", idxVal)
+		}
+		idx, ok := i.ToInt()
+		if !ok {
+			return nil, fmt.Errorf("tuple index out of bounds: %s (len %d)", i.String(), len(t.Elements))
+		}
+		if idx < 0 {
+			if t.IsVariadic {
+				return nil, fmt.Errorf("cannot use negative index on infinite tuple: %s", i.String())
+			}
+			idx = len(t.Elements) + idx
+		}
+		if idx < 0 || idx >= len(t.Elements) {
+			if t.IsVariadic && len(t.Elements) > 0 && idx >= len(t.Elements) {
+				return t.Elements[len(t.Elements)-1], nil
+			}
+			return nil, fmt.Errorf("tuple index out of bounds: %s (len %d)", i.String(), len(t.Elements))
+		}
+		return t.Elements[idx], nil
+	case StringValue:
+		i, ok := idxVal.(IntValue)
+		if !ok {
+			return nil, fmt.Errorf("string index must be Int, got %v", idxVal)
+		}
+		runes := []rune(string(t))
+		idx, ok := i.ToInt()
+		if !ok {
+			return nil, fmt.Errorf("string index out of bounds: %s (len %d)", i.String(), len(runes))
+		}
+		if idx < 0 {
+			idx = len(runes) + idx
+		}
+		if idx < 0 || idx >= len(runes) {
+			return nil, fmt.Errorf("string index out of bounds: %s (len %d)", i.String(), len(runes))
+		}
+		return StringValue(string(runes[idx])), nil
+	case BytesValue:
+		i, ok := idxVal.(IntValue)
+		if !ok {
+			return nil, fmt.Errorf("bytes index must be Int, got %v", idxVal)
+		}
+		data := []byte(t)
+		idx, ok := i.ToInt()
+		if !ok {
+			return nil, fmt.Errorf("bytes index out of bounds: %s (len %d)", i.String(), len(data))
+		}
+		if idx < 0 {
+			idx = len(data) + idx
+		}
+		if idx < 0 || idx >= len(data) {
+			return nil, fmt.Errorf("bytes index out of bounds: %s (len %d)", i.String(), len(data))
+		}
+		return NewIntValue(int64(data[idx])), nil
+	case *DictValue:
+		dk := MakeDictKey(idxVal)
+		if v, ok := t.Entries[dk]; ok {
+			return v, nil
+		}
+		return nil, fmt.Errorf("key not found in dict: %s", idxVal.String())
+	case *MatchValue:
+		if iv, ok := idxVal.(IntValue); ok {
+			idx, ok := iv.ToInt()
+			if !ok {
+				return nil, fmt.Errorf("match group index out of bounds: %s (len %d)", iv.String(), len(t.Groups))
+			}
+			if idx < 0 {
+				idx = len(t.Groups) + idx
+			}
+			if idx < 0 || idx >= len(t.Groups) {
+				return nil, fmt.Errorf("match group index out of bounds: %d (len %d)", idx, len(t.Groups))
+			}
+			return t.Groups[idx], nil
+		}
+		if sv, ok := idxVal.(StringValue); ok {
+			v, ok := t.Names[string(sv)]
+			if !ok {
+				return nil, fmt.Errorf("unknown capture group name: %s", string(sv))
+			}
+			return v, nil
+		}
+		return nil, fmt.Errorf("match index must be Int or String, got %s", typeNameOf(idxVal))
+	default:
+		return nil, fmt.Errorf("cannot index non-tuple/non-string/non-bytes/non-dict value: %v", targetVal)
+	}
+}
+
+func (env *Environment) evalCallWithCalleeValue(callNode ast.Expr, args []ast.Expr, block *ast.BlockLiteral, calleeVal Value) (Value, error) {
+	// Prepare argument thunks (pass-by-need) unless force-demanded or constant literal
+	argValues := make([]Value, len(args))
+	for i, a := range args {
+		if env.isForceDemand(a) {
+			argValues[i] = env.forceExpr(a)
+		} else if val, ok := evalLiteral(a); ok {
+			argValues[i] = val
+		} else {
+			argValues[i] = env.newThunk(a)
+		}
+	}
+
+	// Trailing block closure
+	var blockClosure *Closure
+	if block != nil {
+		blockClosure = &Closure{
+			Params:          block.Params,
+			Body:            block.Body,
+			Env:             env,
+			IsFuncDef:       false,
+			EnclosingFuncID: env.EnclosingFuncID,
+		}
+		if env != nil && env.Inferencer != nil {
+			if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.ExprTypes != nil {
+				if fnType, ok := inf.ExprTypes[block]; ok {
+					blockClosure.FuncType = fnType
+				}
+			}
+		}
+	}
+
+	switch fn := calleeVal.(type) {
+	case *BuiltinFunc:
+		if blockClosure != nil {
+			argValues = append(argValues, blockClosure)
+		}
+		return fn.Fn(argValues)
+
+	case *Closure:
+		// A generic function called without explicit type arguments gets
+		// the type arguments the type checker inferred for this call.
+		if len(fn.TypeParams) > 0 && len(fn.TypeArgs) == 0 {
+			if typeArgs := env.inferredCallTypeArgs(callNode, len(fn.TypeParams)); typeArgs != nil {
+				specialized := *fn
+				specialized.TypeArgs = typeArgs
+				fn = &specialized
+			}
+		}
+		if fn.BlockParam != nil {
+			if blockClosure != nil {
+				return env.invokeClosure(fn, argValues, blockClosure)
+			}
+			return env.invokeClosure(fn, argValues)
+		}
+		if blockClosure != nil {
+			argValues = append(argValues, blockClosure)
+		}
+		return env.invokeClosure(fn, argValues)
+
+	case *StructDefValue:
+		targetDef := fn
+		if len(targetDef.TypeArgs) == 0 && len(targetDef.TypeParams) > 0 && env != nil && env.Inferencer != nil {
+			if inf, ok := env.Inferencer.(*types.Inferencer); ok && inf.ExprTypes != nil {
+				if callT, ok := inf.ExprTypes[callNode]; ok {
+					if st, ok := callT.(*types.StructType); ok && len(st.TypeArgs) == len(targetDef.TypeParams) {
+						typeArgs := make([]string, len(st.TypeArgs))
+						allKnown := true
+						for i, a := range st.TypeArgs {
+							resolvedA := a
+							if types.ContainsSelfOrParam(resolvedA) {
+								resolvedA = resolveTypeParamFromEnv(resolvedA, env, inf)
+							}
+							if resolvedA == nil || resolvedA == types.TypeUnknown || types.ContainsSelfOrParam(resolvedA) {
+								allKnown = false
+								break
+							}
+							typeArgs[i] = resolvedA.String()
+						}
+						if allKnown {
+							if sp, err := specializeGenericValue(targetDef, typeArgs, env); err == nil {
+								if spDef, ok := sp.(*StructDefValue); ok {
+									targetDef = spDef
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return env.instantiateStruct(targetDef, args)
+
+	default:
+		return nil, fmt.Errorf("cannot call non-function value: %v", calleeVal)
+	}
+}
+
+func isShortCircuitValue(v Value, env *Environment) (Value, bool) {
+	forced := Force(v)
+	if _, isNil := forced.(NilValue); isNil {
+		return forced, true
+	}
+	if checkValueMatchesType(forced, "Error", env) {
+		return forced, true
+	}
+	return forced, false
+}
+
+func (env *Environment) evalOptionalChainExpr(e *ast.OptionalChainExpr) (Value, error) {
+	base, steps := ast.UnwindOptionalChain(e)
+	curVal, err := env.evalExpr(base)
+	if err != nil {
+		return nil, err
+	}
+	for _, step := range steps {
+		switch s := step.(type) {
+		case *ast.SafeMemberAccessExpr:
+			forced, stop := isShortCircuitValue(curVal, env)
+			if stop {
+				return forced, nil
+			}
+			curVal, err = evalMemberOnValue(forced, s.Member)
+		case *ast.MemberAccessExpr:
+			curVal, err = evalMemberOnValue(Force(curVal), s.Member)
+		case *ast.SafeIndexExpr:
+			forced, stop := isShortCircuitValue(curVal, env)
+			if stop {
+				return forced, nil
+			}
+			curVal, err = env.evalIndexOnValue(forced, s.Index, "")
+		case *ast.IndexExpr:
+			curVal, err = env.evalIndexOnValue(Force(curVal), s.Index, s.TypeArg)
+		case *ast.TypeInstExpr:
+			curVal, err = specializeGenericValue(Force(curVal), s.TypeArgs, env)
+		case *ast.SafeCallExpr:
+			forced, stop := isShortCircuitValue(curVal, env)
+			if stop {
+				return forced, nil
+			}
+			curVal, err = env.evalCallWithCalleeValue(s, s.Args, s.Block, forced)
+		case *ast.CallExpr:
+			curVal, err = env.evalCallWithCalleeValue(s, s.Args, s.Block, Force(curVal))
+		case *ast.ForceExpr:
+			curVal = Force(curVal)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return curVal, nil
 }
 
 func (env *Environment) instantiateStruct(sDef *StructDefValue, args []ast.Expr) (*StructInstance, error) {
