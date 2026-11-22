@@ -231,6 +231,23 @@ func TestParseNullSafeAndCoalesceForms(t *testing.T) {
 			t.Fatalf("expected ParenOmitted CallExpr with 1 arg, got %#v", steps[1])
 		}
 	})
+
+	t.Run("safe index containing block expression with explicit block markers", func(t *testing.T) {
+		prog := parseNullSafeTest(t, `x = arr?.[match k: +; case Int: +; 0 -; case _: +; 1;;]`)
+		vd := prog.Body[0].(*ast.VarDecl)
+		chain, ok := vd.Value.(*ast.OptionalChainExpr)
+		if !ok {
+			t.Fatalf("expected OptionalChainExpr, got %T", vd.Value)
+		}
+		_, steps := ast.UnwindOptionalChain(chain)
+		si, ok := steps[0].(*ast.SafeIndexExpr)
+		if !ok {
+			t.Fatalf("expected SafeIndexExpr, got %T", steps[0])
+		}
+		if _, ok := si.Index.(*ast.MatchExpr); !ok {
+			t.Fatalf("expected MatchExpr inside ?.[...], got %T", si.Index)
+		}
+	})
 }
 
 func TestParseNullSafeSyntaxErrors(t *testing.T) {
@@ -238,6 +255,7 @@ func TestParseNullSafeSyntaxErrors(t *testing.T) {
 		`x = a?.123`,
 		`x = a?.[]`,
 		`x = a ??`,
+		"x = a?.[match k:\n    case Int: 0\n]",
 	}
 	for _, code := range badCases {
 		l := lexer.NewLexer(code)

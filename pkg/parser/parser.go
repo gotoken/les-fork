@@ -1530,9 +1530,9 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 	}
 	switch e := expr.(type) {
 	case *ast.MatchExpr:
-		return !e.WrappedInParens
+		return e != nil && !e.WrappedInParens
 	case *ast.CallExpr:
-		if e.WrappedInParens {
+		if e == nil || e.WrappedInParens {
 			return false
 		}
 		if e.Block != nil {
@@ -1540,15 +1540,15 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 		}
 		return e.ParenOmitted && len(e.Args) > 0 && exprEndsWithBlock(e.Args[len(e.Args)-1])
 	case *ast.SafeCallExpr:
-		return e.Block != nil
+		return e != nil && e.Block != nil
 	case *ast.OptionalChainExpr:
-		return !e.WrappedInParens && exprEndsWithBlock(e.Expr)
+		return e != nil && !e.WrappedInParens && exprEndsWithBlock(e.Expr)
 	case *ast.CoalesceExpr:
-		return exprEndsWithBlock(e.Right)
+		return e != nil && exprEndsWithBlock(e.Right)
 	case *ast.LambdaExpr:
-		return e.Expr == nil && !e.WrappedInParens
+		return e != nil && e.Expr == nil && !e.WrappedInParens
 	case *ast.ElseExpr:
-		if e.WrappedInParens {
+		if e == nil || e.WrappedInParens {
 			return false
 		}
 		if e.IsBlock {
@@ -1556,7 +1556,7 @@ func exprEndsWithBlock(expr ast.Expr) bool {
 		}
 		return len(e.Body) > 0 && stmtEndsWithBlock(e.Body[len(e.Body)-1])
 	case *ast.NamedArgExpr:
-		return exprEndsWithBlock(e.Value)
+		return e != nil && exprEndsWithBlock(e.Value)
 	default:
 		return false
 	}
@@ -2265,7 +2265,7 @@ func (p *Parser) parseInfix(left ast.Expr) ast.Expr {
 				return nil
 			}
 			idx := p.parseExpr(PREC_LOWEST)
-			if !p.expectPeek(lexer.TokenRBracket) {
+			if !p.expectDelimitedClose(idx, lexer.TokenRBracket, "]") {
 				return nil
 			}
 			step = &ast.SafeIndexExpr{

@@ -301,3 +301,101 @@ func (sc *Scope) mustLookup(name string) Type {
 	}
 	return t
 }
+
+func TestInferGenericsBlocksPipelinesShadowingAndNarrowedWarning(t *testing.T) {
+	code := `
+struct Box[T]:
+    val: T
+
+    def Map[U](f: (T) -> U) -> U:
+        f(@val)
+
+    def WithVal(&block: (T) -> Int) -> Int:
+        block(@val)
+
+struct Config:
+    port: Int
+    def Port() -> Int:
+        @port
+
+def Load(ok: Bool) -> Config | Error:
+    ok ? Config(port: 8080) : Error("err")
+
+struct ShadowTest:
+    Load: String
+
+    def Run(ok: Bool) -> Int | Error:
+        Load(ok)?.Port()
+
+struct Adder:
+    base: Int
+    def Add(x: Int, y: Int) -> Int:
+        @base + x + y
+
+def make_box(b: Bool) -> Box[Int] | Nil:
+    b ? Box(val: 10) : nil
+
+def make_adder(b: Bool) -> Adder | Nil:
+    b ? Adder(base: 100) : nil
+
+def make_fn(b: Bool) -> ((Int, Int) -> Int) | Nil:
+    b ? (|x: Int, y: Int|: x + y) : nil
+
+def make_block_fn(b: Bool) -> ((Int, (Int) -> Int) -> Int) | Nil:
+    b ? (|x: Int, f: (Int) -> Int|: f(x)) : nil
+
+def test_all(b: Bool):
+    g1 = make_box(b)?.Map(|x: Int|: x + 1)
+    g2 = make_box(b)?.Map[String](|x: Int|: x.String())
+    b1 = make_box(b)?.WithVal() do |x|:
+        x * 2
+    b2 = make_block_fn(b)?.(5) do |x: Int|:
+        x + 1
+    p1 = 10 |> make_adder(b)?.Add(5)
+    p2 = 10 |> make_fn(b)?.(5)
+    (g1, g2, b1, b2, p1, p2)
+`
+	inf, prog, err := inferNullSafeTest(t, code)
+	if err != nil {
+		t.Fatalf("unexpected type error: %v", err)
+	}
+	if len(inf.Warnings()) != 0 {
+		t.Fatalf("expected 0 warnings, got %v", inf.Warnings())
+	}
+
+	testFn := prog.Body[len(prog.Body)-1].(*ast.FuncDef)
+	wantTypes := []Type{
+		NewUnionType(TypeInt, TypeNil),
+		NewUnionType(TypeString, TypeNil),
+		NewUnionType(TypeInt, TypeNil),
+		NewUnionType(TypeInt, TypeNil),
+		NewUnionType(TypeInt, TypeNil),
+		NewUnionType(TypeInt, TypeNil),
+	}
+	for i, want := range wantTypes {
+		vd := testFn.Body[i].(*ast.VarDecl)
+		got := inf.ExprTypes[vd.Value]
+		if got == nil || !got.Equals(want) {
+			t.Fatalf("var[%d] (%s): expected %s, got %v", i, vd.Name, want, got)
+		}
+	}
+
+	// Flow-narrowed variable after `!= nil` triggers redundant warning on `?.`
+	codeNarrow := `
+struct Config:
+    def Port() -> Int: 80
+
+def check(c: Config | Nil) -> Int:
+    if c != nil:
+        c?.Port()
+    else:
+        0
+`
+	infN, _, errN := inferNullSafeTest(t, codeNarrow)
+	if errN != nil {
+		t.Fatalf("unexpected error: %v", errN)
+	}
+	if len(infN.Warnings()) != 1 || !strings.Contains(infN.Warnings()[0].Message, "non-Nil/non-Error") {
+		t.Fatalf("expected 1 redundant warning after narrowing, got %v", infN.Warnings())
+	}
+}

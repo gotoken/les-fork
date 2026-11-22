@@ -216,3 +216,97 @@ test_all()
 		t.Fatalf("expected %q, got %q", want, out)
 	}
 }
+
+func TestEvalGenericsDoBlockCustomIndexPipelineAndShadowing(t *testing.T) {
+	code := `
+struct Box[T]:
+    val: T
+
+    def Map[U](f: (T) -> U) -> U:
+        f(@val)
+
+    def WithVal(&block: (T) -> Int) -> Int:
+        block(@val)
+
+struct Table:
+    data: {String: Int}
+
+    def [](k: String) -> Int | Nil:
+        @data[k]
+
+struct Config:
+    port: Int
+    def Port() -> Int:
+        @port
+
+def Load(ok: Bool) -> Config | Error:
+    ok ? Config(port: 9090) : Error("no cfg")
+
+struct Runner:
+    Load: String
+
+    def Run(ok: Bool) -> Int | Error:
+        Load(ok)?.Port()
+
+struct Adder:
+    base: Int
+    def Add(x: Int, y: Int) -> Int:
+        @base + x + y
+
+def main_e2e():
+    boxNil: Box[Int] | Nil = nil
+    boxOk: Box[Int] | Nil = Box(val: 10)
+    g1 = boxOk?.Map(|x: Int|: x + 5)
+    g2 = boxOk?.Map[String](|x: Int|: x.String())
+    g3 = boxNil?.Map(|x: Int|: x + 5)
+
+    # do: block must be skipped when receiver is nil or Error
+    cbNil: ((Int, (Int) -> Int) -> Int) | Nil = nil
+    cbErr: ((Int, (Int) -> Int) -> Int) | Error = Error("cb err")
+    cbOk: ((Int, (Int) -> Int) -> Int) | Nil = |x: Int, f: (Int) -> Int|: f(x)
+
+    d1 = cbNil?.(5) do |x: Int|:
+        print "[SKIP1]"
+        x + 1
+    d2 = cbErr?.(5) do |x: Int|:
+        print "[SKIP2]"
+        x + 1
+    d3 = cbOk?.(5) do |x: Int|:
+        x + 1
+    d4 = boxOk?.WithVal() do |x|:
+        x * 3
+
+    # struct custom [] operator via ?.[k]
+    tNil: Table | Nil = nil
+    tOk: Table | Nil = Table(data: {"a": 77})
+    ti1 = tNil?.["a"] ?? -1
+    ti2 = tOk?.["a"] ?? -1
+
+    # pipeline into ?.Method and ?.(...)
+    aNil: Adder | Nil = nil
+    aOk: Adder | Nil = Adder(base: 100)
+    fNil: ((Int, Int) -> Int) | Nil = nil
+    fOk: ((Int, Int) -> Int) | Nil = |x: Int, y: Int|: x + y
+    p1 = 10 |> aNil?.Add(5)
+    p2 = 10 |> aOk?.Add(5)
+    p3 = 10 |> fNil?.(5)
+    p4 = 10 |> fOk?.(5)
+
+    # outer Load()?.Port() not shadowed by non-callable Load field
+    r = Runner(Load: "shadow")
+    s1 = r.Run(true) else |e|: -1
+    s2 = r.Run(false) else |e|: -2
+
+    print g1, "|", g2, "|", g3, "|", d1, "|", (d2 is Error), "|", d3, "|", d4, "|", ti1, "|", ti2, "|", p1, "|", p2, "|", p3, "|", p4, "|", s1, "|", s2
+
+main_e2e()
+`
+	out, err := runLesChecked(code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "15|10|nil|nil|true|6|30|-1|77|nil|115|nil|15|9090|-2"
+	if out != want {
+		t.Fatalf("expected %q, got %q", want, out)
+	}
+}
